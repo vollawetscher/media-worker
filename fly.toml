@@ -1,0 +1,38 @@
+app = "livekit-media-worker"
+primary_region = "iad"
+
+[build]
+
+[env]
+  MODE = "both"
+  POLLING_INTERVAL_MS = "3000"
+  HEARTBEAT_INTERVAL_MS = "15000"
+  LOG_LEVEL = "info"
+
+[processes]
+  app = "node dist/index.js"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 512
+
+[[services]]
+  internal_port = 8080
+  protocol = "tcp"
+
+  [[services.ports]]
+    port = 80
+    handlers = ["http"]
+
+  [[services.ports]]
+    port = 443
+    handlers = ["tls", "http"]
+
+  [services.concurrency]
+    type = "connections"
+    hard_limit = 25
+    soft_limit = 20
+
+[[vm]]
+  size = "shared-cpu-1x"

@@ -4,6 +4,27 @@ Stateless worker for processing LiveKit rooms with real-time Speech-to-Text (Spe
 
 **Repository**: [https://github.com/vollawetscher/media-worker](https://github.com/vollawetscher/media-worker)
 
+## Quick Start
+
+```bash
+# Clone and install
+git clone https://github.com/vollawetscher/media-worker.git
+cd media-worker
+npm install
+
+# Configure
+cp .env.example .env
+# Edit .env with your Supabase credentials
+
+# Run locally
+npm run dev
+
+# Deploy to Fly.io
+fly auth login
+fly secrets set SUPABASE_URL="your_url" SUPABASE_SERVICE_ROLE_KEY="your_key"
+fly deploy
+```
+
 ## Features
 
 - **Stateless Architecture**: All state stored in Supabase database
@@ -137,6 +158,27 @@ npm run start:ai-jobs
 8. **Repeat**: Poll for next job
 
 ## Deployment
+
+### Fly.io (Recommended)
+
+Quick deploy to Fly.io:
+
+```bash
+# Install Fly CLI and login
+fly auth login
+
+# Set secrets
+fly secrets set SUPABASE_URL="your_url"
+fly secrets set SUPABASE_SERVICE_ROLE_KEY="your_key"
+
+# Deploy
+fly deploy
+
+# Scale to multiple instances
+fly scale count 3
+```
+
+**See [DEPLOYMENT.md](./DEPLOYMENT.md) for complete Fly.io deployment guide.**
 
 ### Docker
 
