@@ -2,6 +2,8 @@
 
 Stateless worker for processing LiveKit rooms with real-time Speech-to-Text (Speechmatics) and AI analysis (OpenAI/Anthropic).
 
+**Repository**: [https://github.com/vollawetscher/media-worker](https://github.com/vollawetscher/media-worker)
+
 ## Features
 
 - **Stateless Architecture**: All state stored in Supabase database
@@ -40,10 +42,11 @@ When a worker joins a room, it establishes or loads a timebase origin (t0) store
 
 ## Setup
 
-### 1. Install Dependencies
+### 1. Clone and Install Dependencies
 
 ```bash
-cd workers/media-worker
+git clone https://github.com/vollawetscher/media-worker.git
+cd media-worker
 npm install
 ```
 
