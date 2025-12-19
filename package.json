@@ -1,0 +1,37 @@
+{
+  "name": "livekit-media-worker",
+  "version": "1.0.0",
+  "description": "Stateless LiveKit media worker with real-time STT and AI processing",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "start:transcription": "node dist/index.js --mode=transcription",
+    "start:ai-jobs": "node dist/index.js --mode=ai-jobs",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.32.0",
+    "@supabase/supabase-js": "^2.57.4",
+    "dotenv": "^16.6.1",
+    "livekit-client": "^2.8.0",
+    "livekit-server-sdk": "^2.15.0",
+    "openai": "^4.73.0",
+    "pino": "^9.5.0",
+    "pino-pretty": "^13.0.0",
+    "uuid": "^11.0.3",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/uuid": "^10.0.0",
+    "@types/ws": "^8.5.13",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
