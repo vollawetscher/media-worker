@@ -24,10 +24,11 @@ Deno.serve(async (req: Request) => {
     const body = await req.text();
     const authHeader = req.headers.get("Authorization");
 
+    // Get LiveKit Cloud server (the one sending webhooks)
     const { data: servers, error: serversError } = await supabase
       .from("livekit_servers")
       .select("id, name, server_url, api_key, api_secret")
-      .limit(1)
+      .eq("server_url", "wss://callassist-3wzky1ht.livekit.cloud")
       .maybeSingle();
 
     if (serversError || !servers) {
