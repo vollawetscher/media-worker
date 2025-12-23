@@ -95,7 +95,7 @@ export class LiveKitRoomClient {
     const token = new AccessToken(this.serverConfig.api_key, this.serverConfig.api_secret, {
       identity: `worker-${this.workerId}`,
       name: `Media Worker`,
-      metadata: JSON.stringify({ worker: true, hidden: true }),
+      metadata: JSON.stringify({ worker: true }),
     });
 
     token.addGrant({
