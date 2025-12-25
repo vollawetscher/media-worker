@@ -1,4 +1,4 @@
-import { RemoteAudioTrack, RemoteParticipant } from 'livekit-client';
+import { RemoteTrack, RemoteParticipant, AudioFrame, AudioStream } from '@livekit/rtc-node';
 import { SpeechmaticsStreamClient, SpeechmaticsConfig } from './speechmatics.js';
 import { TranscriptManager } from './transcript-manager.js';
 import { createLogger } from '../lib/logger.js';
@@ -24,7 +24,7 @@ export class AudioStreamManager {
 
   async handleParticipantTrack(
     participant: RemoteParticipant,
-    track: RemoteAudioTrack,
+    track: RemoteTrack,
     participantId: string
   ): Promise<void> {
     const sessionKey = `${participant.identity}-${track.sid}`;
@@ -121,11 +121,12 @@ export class AudioStreamManager {
 }
 
 class AudioProcessor {
-  private track: RemoteAudioTrack;
+  private track: RemoteTrack;
   private onAudioData: (data: Buffer) => void;
   private isRunning: boolean = false;
+  private processingTask: Promise<void> | null = null;
 
-  constructor(track: RemoteAudioTrack, onAudioData: (data: Buffer) => void) {
+  constructor(track: RemoteTrack, onAudioData: (data: Buffer) => void) {
     this.track = track;
     this.onAudioData = onAudioData;
   }
@@ -135,11 +136,54 @@ class AudioProcessor {
       return;
     }
 
-    logger.warn(
-      'Audio processing in Node.js worker requires additional setup. This is a placeholder implementation.'
-    );
-
     this.isRunning = true;
+
+    logger.info({ trackSid: this.track.sid }, 'Starting audio frame processing');
+
+    this.processingTask = this.processAudioFrames();
+  }
+
+  private async processAudioFrames(): Promise<void> {
+    const audioStream = new AudioStream(this.track, 16000, 1);
+    const reader = audioStream.getReader();
+
+    try {
+      while (this.isRunning) {
+        const { done, value } = await reader.read();
+
+        if (done) {
+          logger.info({ trackSid: this.track.sid }, 'Audio stream ended');
+          break;
+        }
+
+        if (value) {
+          const pcmData = this.convertFrameToPCM(value);
+          this.onAudioData(pcmData);
+        }
+      }
+    } catch (error) {
+      if (this.isRunning) {
+        logger.error({ error, trackSid: this.track.sid }, 'Error processing audio frames');
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  }
+
+  private convertFrameToPCM(frame: AudioFrame): Buffer {
+    const data = frame.data;
+
+    if (frame.channels === 1) {
+      return Buffer.from(data.buffer, data.byteOffset, data.byteLength);
+    } else if (frame.channels === 2) {
+      const monoSamples = new Int16Array(frame.samplesPerChannel);
+      for (let i = 0; i < frame.samplesPerChannel; i++) {
+        monoSamples[i] = Math.floor((data[i * 2] + data[i * 2 + 1]) / 2);
+      }
+      return Buffer.from(monoSamples.buffer, monoSamples.byteOffset, monoSamples.byteLength);
+    }
+
+    return Buffer.from(data.buffer, data.byteOffset, data.byteLength);
   }
 
   async stop(): Promise<void> {
@@ -147,6 +191,12 @@ class AudioProcessor {
       return;
     }
 
+    logger.info({ trackSid: this.track.sid }, 'Stopping audio frame processing');
     this.isRunning = false;
+
+    if (this.processingTask) {
+      await this.processingTask;
+      this.processingTask = null;
+    }
   }
 }

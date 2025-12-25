@@ -4,9 +4,9 @@ import {
   RemoteParticipant,
   RemoteTrack,
   RemoteTrackPublication,
-  Track,
-  RemoteAudioTrack,
-} from 'livekit-client';
+  TrackKind,
+  AudioFrame,
+} from '@livekit/rtc-node';
 import { AccessToken } from 'livekit-server-sdk';
 import { getSupabase } from '../lib/supabase.js';
 import { createLogger } from '../lib/logger.js';
@@ -152,7 +152,7 @@ export class LiveKitRoomClient {
     publication: RemoteTrackPublication,
     participant: RemoteParticipant
   ): Promise<void> {
-    if (track.kind !== Track.Kind.Audio) {
+    if (track.kind !== TrackKind.KIND_AUDIO) {
       return;
     }
 
@@ -171,7 +171,7 @@ export class LiveKitRoomClient {
       'Audio track subscribed'
     );
 
-    await this.audioStreamManager.handleParticipantTrack(participant, track as RemoteAudioTrack, participantId);
+    await this.audioStreamManager.handleParticipantTrack(participant, track, participantId);
   }
 
   private async createOrUpdateParticipant(participant: RemoteParticipant, event: 'joined' | 'left'): Promise<string> {
@@ -245,6 +245,6 @@ export class LiveKitRoomClient {
   }
 
   isConnected(): boolean {
-    return this.room.state === 'connected';
+    return this.room.isConnected;
   }
 }
