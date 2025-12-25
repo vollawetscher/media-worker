@@ -1,9 +1,6 @@
-FROM node:20-slim
+FROM node:20
 
 WORKDIR /app
-
-# Install CA certificates for HTTPS requests
-RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
 
 COPY package*.json ./
 
