@@ -50,7 +50,7 @@ Deno.serve(async (req: Request) => {
     if (event.event === "room_started" && event.room) {
       const { data: existingRoom } = await supabase
         .from("rooms")
-        .select("id")
+        .select("id, status, closed_at")
         .eq("room_name", event.room.name)
         .maybeSingle();
 
@@ -81,8 +81,36 @@ Deno.serve(async (req: Request) => {
         }
 
         console.log("Created room:", event.room.name);
+      } else if (existingRoom.closed_at !== null) {
+        // Room was closed, reopen it
+        const { error: reopenError } = await supabase
+          .from("rooms")
+          .update({
+            status: "pending",
+            closed_at: null,
+            media_worker_id: null,
+            metadata: {
+              livekit_room_sid: event.room.sid,
+              created_via: "webhook",
+              reopened_at: new Date().toISOString(),
+            },
+          })
+          .eq("id", existingRoom.id);
+
+        if (reopenError) {
+          console.error("Failed to reopen room:", reopenError);
+          return new Response(
+            JSON.stringify({ error: "Failed to reopen room" }),
+            {
+              status: 500,
+              headers: { ...corsHeaders, "Content-Type": "application/json" },
+            }
+          );
+        }
+
+        console.log("Reopened room:", event.room.name);
       } else {
-        console.log("Room already exists:", event.room.name);
+        console.log("Room already active:", event.room.name);
       }
     } else if (event.event === "participant_joined" && event.room) {
       const { error: updateError } = await supabase
