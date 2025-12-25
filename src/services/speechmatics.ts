@@ -212,7 +212,7 @@ export class SpeechmaticsStreamClient {
         room_id: this.roomId,
         participant_id: this.participantId,
         session_id: this.sessionId,
-        status: 'starting',
+        status: 'active',
         started_at: new Date().toISOString(),
       })
       .select('id')
@@ -258,7 +258,7 @@ export class SpeechmaticsStreamClient {
     await supabase
       .from('speechmatics_sessions')
       .update({
-        status: 'closed',
+        status: 'completed',
         ended_at: endTime.toISOString(),
         audio_minutes: audioMinutes,
         transcript_count: this.transcriptCount,
