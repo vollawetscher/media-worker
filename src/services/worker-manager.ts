@@ -66,7 +66,7 @@ export class WorkerManager {
 
         this.currentRoomId = null;
       } catch (error) {
-        logger.error({ error }, 'Error in transcription mode');
+        logger.error({ error, roomId: this.currentRoomId }, 'Error in transcription mode');
 
         if (this.currentRoomId) {
           await this.releaseRoom(this.currentRoomId);
