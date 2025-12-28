@@ -4,7 +4,7 @@
 #
 
 app = 'livekit-media-worker'
-primary_region = 'iad'
+primary_region = 'fra'
 
 [build]
 
