@@ -14,6 +14,22 @@ export interface WorkerConfig {
   };
 }
 
+function parseCommandLineArgs(): Partial<WorkerConfig> {
+  const args = process.argv.slice(2);
+  const parsed: Partial<WorkerConfig> = {};
+
+  for (const arg of args) {
+    if (arg.startsWith('--mode=')) {
+      const mode = arg.substring(7) as WorkerConfig['mode'];
+      if (['transcription', 'ai-jobs', 'both'].includes(mode)) {
+        parsed.mode = mode;
+      }
+    }
+  }
+
+  return parsed;
+}
+
 export function loadConfig(): WorkerConfig {
   const requiredEnvVars = ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY'];
 
@@ -23,7 +39,9 @@ export function loadConfig(): WorkerConfig {
     }
   }
 
-  const mode = (process.env.MODE || 'transcription') as WorkerConfig['mode'];
+  const cliArgs = parseCommandLineArgs();
+  const mode = (cliArgs.mode || process.env.MODE || 'transcription') as WorkerConfig['mode'];
+
   if (!['transcription', 'ai-jobs', 'both'].includes(mode)) {
     throw new Error(`Invalid MODE: ${mode}. Must be 'transcription', 'ai-jobs', or 'both'`);
   }
