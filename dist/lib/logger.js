@@ -1,0 +1,22 @@
+import pino from 'pino';
+const isDevelopment = process.env.NODE_ENV !== 'production';
+export const logger = pino({
+    level: process.env.LOG_LEVEL || 'info',
+    serializers: {
+        error: pino.stdSerializers.err,
+    },
+    transport: isDevelopment
+        ? {
+            target: 'pino-pretty',
+            options: {
+                colorize: true,
+                translateTime: 'HH:MM:ss Z',
+                ignore: 'pid,hostname',
+            },
+        }
+        : undefined,
+});
+export function createLogger(context) {
+    return logger.child(context);
+}
+//# sourceMappingURL=logger.js.map
