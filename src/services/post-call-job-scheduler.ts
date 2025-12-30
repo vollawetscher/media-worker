@@ -34,8 +34,19 @@ export class PostCallJobScheduler {
       return;
     }
 
+    const consolidatedTranscripts = this.consolidateTranscripts(transcripts);
+
+    logger.info(
+      {
+        roomId: this.roomId,
+        originalCount: transcripts.length,
+        consolidatedCount: consolidatedTranscripts.length,
+      },
+      'Consolidated transcripts for AI processing'
+    );
+
     const inputData = {
-      transcripts: transcripts,
+      transcripts: consolidatedTranscripts,
       participants: participants,
       roomMetadata: roomMetadata,
     };
@@ -65,6 +76,49 @@ export class PostCallJobScheduler {
       },
       'Successfully scheduled post-call jobs'
     );
+  }
+
+  private consolidateTranscripts(transcripts: any[]): any[] {
+    if (transcripts.length === 0) {
+      return [];
+    }
+
+    const consolidated: any[] = [];
+    let currentUtterance: any = null;
+    const PAUSE_THRESHOLD_SECONDS = 2.0;
+
+    for (const transcript of transcripts) {
+      const shouldStartNew =
+        !currentUtterance ||
+        currentUtterance.participant_id !== transcript.participant_id ||
+        transcript.relative_timestamp - currentUtterance.end_timestamp > PAUSE_THRESHOLD_SECONDS;
+
+      if (shouldStartNew) {
+        if (currentUtterance) {
+          consolidated.push(currentUtterance);
+        }
+
+        currentUtterance = {
+          participant_id: transcript.participant_id,
+          transcript_text: transcript.transcript_text,
+          relative_timestamp: transcript.relative_timestamp,
+          start_time: transcript.start_time,
+          end_time: transcript.end_time,
+          end_timestamp: transcript.relative_timestamp + (parseFloat(transcript.end_time) - parseFloat(transcript.start_time)),
+        };
+      } else {
+        currentUtterance.transcript_text += transcript.transcript_text;
+        currentUtterance.end_time = transcript.end_time;
+        currentUtterance.end_timestamp =
+          transcript.relative_timestamp + (parseFloat(transcript.end_time) - parseFloat(transcript.start_time));
+      }
+    }
+
+    if (currentUtterance) {
+      consolidated.push(currentUtterance);
+    }
+
+    return consolidated;
   }
 
   private async loadTranscripts(): Promise<any[]> {
