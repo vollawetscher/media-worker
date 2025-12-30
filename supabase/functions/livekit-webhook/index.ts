@@ -97,10 +97,29 @@ Deno.serve(async (req: Request) => {
         console.log("Updated room to active:", event.room.name);
       }
     } else if (event.event === "room_finished" && event.room) {
+      // Get the room record first
+      const { data: room, error: roomError } = await supabase
+        .from("rooms")
+        .select("id")
+        .eq("room_name", event.room.name)
+        .maybeSingle();
+
+      if (roomError || !room) {
+        console.error("Failed to find room:", roomError);
+        return new Response(
+          JSON.stringify({ error: "Room not found" }),
+          {
+            status: 404,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          }
+        );
+      }
+
+      // Update room status to completed
       const { error: updateError } = await supabase
         .from("rooms")
         .update({
-          status: "closed",
+          status: "completed",
           closed_at: new Date().toISOString(),
         })
         .eq("room_name", event.room.name);
@@ -108,7 +127,66 @@ Deno.serve(async (req: Request) => {
       if (updateError) {
         console.error("Failed to close room:", updateError);
       } else {
-        console.log("Closed room:", event.room.name);
+        console.log("Completed room:", event.room.name);
+      }
+
+      // Schedule post-call AI jobs
+      const { data: transcripts } = await supabase
+        .from("transcriptions")
+        .select("*")
+        .eq("room_id", room.id)
+        .eq("is_final", true)
+        .order("relative_timestamp", { ascending: true });
+
+      if (!transcripts || transcripts.length === 0) {
+        console.log("No transcripts found, skipping job creation");
+        return new Response(
+          JSON.stringify({ success: true, event: event.event }),
+          {
+            status: 200,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          }
+        );
+      }
+
+      const { data: participants } = await supabase
+        .from("participants")
+        .select("*")
+        .eq("room_id", room.id);
+
+      const { data: roomMetadata } = await supabase
+        .from("rooms")
+        .select("*")
+        .eq("id", room.id)
+        .maybeSingle();
+
+      const inputData = {
+        transcripts: transcripts,
+        participants: participants || [],
+        roomMetadata: roomMetadata || {},
+      };
+
+      const jobsToCreate = [
+        { jobType: "summary", priority: 100 },
+        { jobType: "action_items", priority: 90 },
+        { jobType: "sentiment", priority: 70 },
+        { jobType: "speaker_analytics", priority: 50 },
+      ].map((job) => ({
+        room_id: room.id,
+        job_type: job.jobType,
+        priority: job.priority,
+        status: "pending",
+        input_data: inputData,
+      }));
+
+      const { error: jobError } = await supabase
+        .from("post_call_jobs")
+        .insert(jobsToCreate);
+
+      if (jobError) {
+        console.error("Failed to create post-call jobs:", jobError);
+      } else {
+        console.log("Created post-call jobs for room:", event.room.name, "count:", jobsToCreate.length);
       }
     }
 
