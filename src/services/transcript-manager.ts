@@ -30,6 +30,10 @@ export class TranscriptManager {
   }
 
   async writeTranscript(data: TranscriptData): Promise<void> {
+    if (!data.isFinal) {
+      return;
+    }
+
     this.batchQueue.push({ ...data, timestamp: new Date() });
 
     if (this.batchQueue.length >= this.BATCH_SIZE) {

@@ -54,7 +54,7 @@ Deno.serve(async (req: Request) => {
         .eq("room_name", event.room.name)
         .maybeSingle();
 
-      if (!existingRoom) {
+      if (!existingRoom || existingRoom.closed_at !== null) {
         const { error: insertError } = await supabase
           .from("rooms")
           .insert({
@@ -81,34 +81,6 @@ Deno.serve(async (req: Request) => {
         }
 
         console.log("Created room:", event.room.name);
-      } else if (existingRoom.closed_at !== null) {
-        // Room was closed, reopen it
-        const { error: reopenError } = await supabase
-          .from("rooms")
-          .update({
-            status: "pending",
-            closed_at: null,
-            media_worker_id: null,
-            metadata: {
-              livekit_room_sid: event.room.sid,
-              created_via: "webhook",
-              reopened_at: new Date().toISOString(),
-            },
-          })
-          .eq("id", existingRoom.id);
-
-        if (reopenError) {
-          console.error("Failed to reopen room:", reopenError);
-          return new Response(
-            JSON.stringify({ error: "Failed to reopen room" }),
-            {
-              status: 500,
-              headers: { ...corsHeaders, "Content-Type": "application/json" },
-            }
-          );
-        }
-
-        console.log("Reopened room:", event.room.name);
       } else {
         console.log("Room already active:", event.room.name);
       }
