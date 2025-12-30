@@ -45,7 +45,7 @@ LANGUAGE plpgsql
 SECURITY DEFINER
 AS $$
 DECLARE
-  v_claimed boolean;
+  v_claimed integer;
 BEGIN
   -- Attempt to claim the room atomically
   UPDATE rooms
