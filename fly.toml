@@ -10,9 +10,16 @@ primary_region = 'fra'
 
 # Background worker - no HTTP service needed
 [processes]
-  app = "node dist/index.js"
+  transcription = "npm run start:transcription"
+  ai-jobs = "npm run start:ai-jobs"
 
 [[vm]]
   memory = '1gb'
   cpu_kind = 'shared'
   cpus = 1
+
+[processes.transcription]
+  count = 3
+
+[processes.ai-jobs]
+  count = 2
