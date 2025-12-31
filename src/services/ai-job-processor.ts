@@ -20,6 +20,7 @@ interface Job {
   room_id: string;
   job_type: string;
   input_data: any;
+  organization_id?: string;
 }
 
 export class AIJobProcessor {
@@ -90,7 +91,7 @@ export class AIJobProcessor {
 
     const { data: jobs, error } = await supabase
       .from('post_call_jobs')
-      .select('*')
+      .select('id, room_id, job_type, input_data, priority, created_at')
       .eq('status', 'pending')
       .order('priority', { ascending: false })
       .order('created_at', { ascending: true })
@@ -116,7 +117,16 @@ export class AIJobProcessor {
       return null;
     }
 
-    return job as Job;
+    const { data: roomData } = await supabase
+      .from('rooms')
+      .select('organization_id')
+      .eq('id', job.room_id)
+      .single();
+
+    return {
+      ...job,
+      organization_id: roomData?.organization_id,
+    } as Job;
   }
 
   private async processJob(job: Job): Promise<any> {
@@ -238,10 +248,16 @@ export class AIJobProcessor {
   }
 
   private async logAIInteraction(job: Job, config: AIConfig, latencyMs: number, result: any): Promise<void> {
+    if (!job.organization_id) {
+      logger.warn({ jobId: job.id, roomId: job.room_id }, 'Cannot log AI interaction: organization_id missing');
+      return;
+    }
+
     const supabase = getSupabase();
 
     await supabase.from('ai_interactions').insert({
       room_id: job.room_id,
+      organization_id: job.organization_id,
       job_id: job.id,
       interaction_type: 'llm',
       provider: result.provider,

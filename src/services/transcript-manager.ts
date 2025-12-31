@@ -23,6 +23,7 @@ export class TranscriptManager {
   private batchTimer: NodeJS.Timeout | null = null;
   private readonly BATCH_SIZE = 10;
   private readonly BATCH_INTERVAL_MS = 100;
+  private organizationId: string | null = null;
 
   constructor(roomId: string, timebase: Timebase) {
     this.roomId = roomId;
@@ -56,6 +57,16 @@ export class TranscriptManager {
     const batch = [...this.batchQueue];
     this.batchQueue = [];
 
+    if (!this.organizationId) {
+      await this.loadOrganizationId();
+    }
+
+    if (!this.organizationId) {
+      logger.error({ roomId: this.roomId }, 'Cannot flush transcripts: organization_id not found');
+      this.batchQueue.unshift(...batch);
+      throw new Error('organization_id not found for room');
+    }
+
     const supabase = getSupabase();
 
     const records = batch.map((item) => {
@@ -63,6 +74,7 @@ export class TranscriptManager {
 
       return {
         room_id: this.roomId,
+        organization_id: this.organizationId,
         speechmatics_session_id: item.speechmaticsSessionId,
         participant_id: item.participantId,
         transcript_text: item.text,
@@ -86,6 +98,24 @@ export class TranscriptManager {
     }
 
     logger.debug({ count: records.length, roomId: this.roomId }, 'Successfully wrote transcript batch');
+  }
+
+  private async loadOrganizationId(): Promise<void> {
+    const supabase = getSupabase();
+
+    const { data, error } = await supabase
+      .from('rooms')
+      .select('organization_id')
+      .eq('id', this.roomId)
+      .single();
+
+    if (error || !data) {
+      logger.error({ error, roomId: this.roomId }, 'Failed to load organization_id from room');
+      return;
+    }
+
+    this.organizationId = data.organization_id;
+    logger.debug({ roomId: this.roomId, organizationId: this.organizationId }, 'Loaded organization_id');
   }
 
   async stop(): Promise<void> {
