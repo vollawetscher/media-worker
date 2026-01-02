@@ -60,6 +60,7 @@ Deno.serve(async (req: Request) => {
           .insert({
             room_name: event.room.name,
             server_id: servers.id,
+            organization_id: "00000000-0000-0000-0000-000000000000",
             status: "pending",
             ai_enabled: true,
             transcription_enabled: true,
