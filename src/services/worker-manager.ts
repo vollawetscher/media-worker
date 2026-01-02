@@ -7,7 +7,6 @@ import { AudioStreamManager } from './audio-stream-manager.js';
 import { LiveKitRoomClient, LiveKitServerConfig } from './livekit-room.js';
 import { SpeechmaticsConfig } from './speechmatics.js';
 import { CallEndDetector } from './call-end-detector.js';
-import { PostCallJobScheduler } from './post-call-job-scheduler.js';
 import { AIJobProcessor } from './ai-job-processor.js';
 import type { WorkerConfig } from '../config/index.js';
 
@@ -152,11 +151,6 @@ export class WorkerManager {
         })
         .eq('room_id', this.currentRoomId!)
         .eq('is_active', true);
-
-      if (this.currentRoomId) {
-        const jobScheduler = new PostCallJobScheduler(this.currentRoomId);
-        await jobScheduler.scheduleJobs();
-      }
 
       if (this.currentRoomId) {
         await this.releaseRoom(this.currentRoomId);
