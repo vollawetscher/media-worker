@@ -46,6 +46,20 @@ Workers are completely stateless. All room state, transcripts, and configuration
 3. New worker claims room and continues processing
 4. Timeline reconstruction uses relative timestamps from t0
 
+### Event-Driven Architecture
+
+The system uses a webhook-driven architecture:
+
+1. **LiveKit Webhook**: Receives room lifecycle events from LiveKit
+   - `room_started`: Creates room record in database
+   - `participant_joined`: Updates room status to active
+   - `room_finished`: Marks room complete and schedules AI jobs
+
+2. **Workers**: Process rooms and jobs
+   - Transcription workers claim pending rooms and process audio
+   - AI job workers process post-call analysis tasks
+   - Workers never schedule jobs (webhook handles this)
+
 ### Monotonic Timebase (t0)
 
 When a worker joins a room, it establishes or loads a timebase origin (t0) stored in `rooms.timebase_started_at`. All timestamps are converted to seconds from t0:
@@ -90,7 +104,21 @@ HEARTBEAT_INTERVAL_MS=15000
 LOG_LEVEL=info
 ```
 
-### 3. Configure Services in Database
+### 3. Deploy Supabase Edge Functions
+
+The system requires a webhook endpoint to receive LiveKit events:
+
+```bash
+# Deploy the LiveKit webhook function
+supabase functions deploy livekit-webhook
+```
+
+Configure your LiveKit server to send webhooks to:
+```
+https://your-project.supabase.co/functions/v1/livekit-webhook
+```
+
+### 4. Configure Services in Database
 
 #### Speechmatics Configuration
 
@@ -112,7 +140,7 @@ VALUES
   ('anthropic', 'sk-ant-...', 'claude-3-5-sonnet-20241022', 90, true, 'post-call-analysis');
 ```
 
-### 4. Run Worker
+### 5. Run Worker
 
 Development:
 ```bash
@@ -133,6 +161,19 @@ npm run start:ai-jobs
 
 ## How It Works
 
+### LiveKit Webhook
+
+1. **Room Started**: LiveKit sends webhook when room is created
+   - Webhook creates room record with `status='pending'`
+   - Room becomes available for worker claim
+
+2. **Participant Joined**: LiveKit sends webhook when first participant joins
+   - Webhook updates room to `status='active'`
+
+3. **Room Finished**: LiveKit sends webhook when room closes
+   - Webhook updates room to `status='completed'`
+   - **Webhook schedules all post-call AI jobs** (summary, action items, sentiment, speaker analytics)
+
 ### Transcription Mode
 
 1. **Poll for Rooms**: Worker queries for rooms with `status='pending'` and no active worker
@@ -142,9 +183,11 @@ npm run start:ai-jobs
 5. **Process Participants**: Create Speechmatics session for each participant's audio
 6. **Write Transcripts**: Save transcripts with `relative_timestamp` from t0
 7. **Monitor for End**: Empty room timeout or explicit room close
-8. **Cleanup**: Close sessions, finalize room, schedule AI jobs
-9. **Release Room**: Mark room complete, release claim
+8. **Cleanup**: Close sessions, mark participants inactive, finalize room
+9. **Release Room**: Release claim from worker
 10. **Repeat**: Poll for next room
+
+**Note**: Workers do NOT schedule AI jobs. Job scheduling is handled exclusively by the webhook to prevent race conditions.
 
 ### AI Jobs Mode
 
@@ -297,12 +340,18 @@ src/
 │   ├── ai-job-processor.ts
 │   ├── call-end-detector.ts
 │   ├── livekit-room.ts
-│   ├── post-call-job-scheduler.ts
+│   ├── post-call-job-scheduler.ts  # Used by webhook only
 │   ├── room-poller.ts
 │   ├── speechmatics.ts
 │   ├── transcript-manager.ts
 │   └── worker-manager.ts
 └── index.ts          # Entry point
+
+supabase/
+├── functions/        # Edge Functions
+│   ├── livekit-webhook/    # Handles LiveKit events
+│   └── diagnostic/         # Health check endpoint
+└── migrations/       # Database schema migrations
 ```
 
 ### Type Checking
@@ -320,9 +369,9 @@ npm run typecheck
 
 ### Extending Job Types
 
-1. Add job type to `post_call_jobs.job_type` enum
+1. Add job type to `post_call_jobs.job_type` enum in database
 2. Add prompt template in `AIJobProcessor.buildPrompt()`
-3. Update `PostCallJobScheduler.DEFAULT_JOBS`
+3. Update job creation in `supabase/functions/livekit-webhook/index.ts` (room_finished event handler)
 
 ## License
 
