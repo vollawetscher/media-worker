@@ -179,6 +179,8 @@ export class LiveKitRoomClient {
     const metadata = participant.metadata ? JSON.parse(participant.metadata) : {};
 
     if (event === 'joined') {
+      const displayName = this.getDisplayName(participant.identity, metadata);
+
       const { data, error } = await supabase
         .from('participants')
         .upsert(
@@ -186,9 +188,10 @@ export class LiveKitRoomClient {
             room_id: this.roomId,
             identity: participant.identity,
             connection_type: metadata.connection_type || 'webrtc',
-            phone_number: metadata.phone_number || null,
+            phone_number: metadata.phone_number || metadata.phoneNumber || null,
             joined_at: new Date().toISOString(),
             is_active: true,
+            display_name: displayName,
             metadata: metadata,
           },
           { onConflict: 'room_id,identity' }
@@ -246,5 +249,29 @@ export class LiveKitRoomClient {
 
   isConnected(): boolean {
     return this.room.isConnected;
+  }
+
+  private getDisplayName(identity: string, metadata: any): string {
+    if (metadata.contactName) {
+      return metadata.contactName;
+    }
+
+    if (metadata.phoneNumber || metadata.phone_number) {
+      return metadata.phoneNumber || metadata.phone_number;
+    }
+
+    if (metadata.name) {
+      return metadata.name;
+    }
+
+    if (identity.startsWith('sip-call-')) {
+      return 'Phone User';
+    }
+
+    if (identity.startsWith('web-')) {
+      return 'Web User';
+    }
+
+    return identity;
   }
 }
