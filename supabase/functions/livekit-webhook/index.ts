@@ -131,6 +131,24 @@ Deno.serve(async (req: Request) => {
         console.log("Completed room:", event.room.name);
       }
 
+      // Check if jobs already exist for this room (idempotency check)
+      const { data: existingJobs } = await supabase
+        .from("post_call_jobs")
+        .select("id")
+        .eq("room_id", room.id)
+        .limit(1);
+
+      if (existingJobs && existingJobs.length > 0) {
+        console.log("Jobs already exist for room:", event.room.name, "skipping duplicate creation");
+        return new Response(
+          JSON.stringify({ success: true, event: event.event, skipped: "jobs_exist" }),
+          {
+            status: 200,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          }
+        );
+      }
+
       // Schedule post-call AI jobs
       const { data: transcripts } = await supabase
         .from("transcriptions")

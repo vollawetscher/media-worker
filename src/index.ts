@@ -6,6 +6,16 @@ import { logger } from './lib/logger.js';
 
 loadEnv();
 
+process.on('uncaughtException', (error) => {
+  logger.fatal({ error }, 'Uncaught exception, exiting');
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  logger.fatal({ reason, promise }, 'Unhandled rejection, exiting');
+  process.exit(1);
+});
+
 async function main() {
   try {
     logger.info('LiveKit Media Worker starting');
