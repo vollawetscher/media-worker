@@ -17,6 +17,7 @@ export class WorkerManager {
   private workerId: string;
   private currentRoomId: string | null = null;
   private heartbeatInterval: NodeJS.Timeout | null = null;
+  private cleanupInterval: NodeJS.Timeout | null = null;
   private isShuttingDown: boolean = false;
 
   private roomPoller?: RoomPoller;
@@ -35,8 +36,10 @@ export class WorkerManager {
   async start(): Promise<void> {
     logger.info({ workerId: this.workerId, mode: this.config.mode }, 'Starting worker');
 
+    await this.cleanupStaleWorkers();
     await this.registerWorker();
     this.startHeartbeat();
+    this.startCleanupInterval();
     this.setupShutdownHandlers();
 
     if (this.config.mode === 'ai-jobs' || this.config.mode === 'both') {
@@ -197,6 +200,33 @@ export class WorkerManager {
     }, this.config.heartbeatIntervalMs);
   }
 
+  private startCleanupInterval(): void {
+    this.cleanupInterval = setInterval(async () => {
+      await this.cleanupStaleWorkers();
+    }, 60000);
+  }
+
+  private async cleanupStaleWorkers(): Promise<void> {
+    try {
+      const supabase = getSupabase();
+
+      const { data: cleanedCount, error } = await supabase.rpc('cleanup_stale_workers', {
+        p_stale_threshold_seconds: 45,
+      });
+
+      if (error) {
+        logger.error({ error }, 'Failed to cleanup stale workers');
+        return;
+      }
+
+      if (cleanedCount && cleanedCount > 0) {
+        logger.info({ cleanedCount }, 'Cleaned up stale workers');
+      }
+    } catch (error) {
+      logger.error({ error }, 'Error during stale worker cleanup');
+    }
+  }
+
   private setupShutdownHandlers(): void {
     const shutdown = async (signal: string) => {
       logger.info({ signal }, 'Shutdown signal received');
@@ -227,6 +257,10 @@ export class WorkerManager {
 
     if (this.heartbeatInterval) {
       clearInterval(this.heartbeatInterval);
+    }
+
+    if (this.cleanupInterval) {
+      clearInterval(this.cleanupInterval);
     }
 
     const supabase = getSupabase();
