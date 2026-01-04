@@ -1,7 +1,7 @@
 import { getSupabase } from '../lib/supabase.js';
 import { createLogger } from '../lib/logger.js';
 import { Timebase } from '../lib/timebase.js';
-import { RoomPoller, Room } from './room-poller.js';
+import { RoomSubscriber, Room } from './room-subscriber.js';
 import { TranscriptManager } from './transcript-manager.js';
 import { AudioStreamManager } from './audio-stream-manager.js';
 import { LiveKitRoomClient, LiveKitServerConfig } from './livekit-room.js';
@@ -19,8 +19,9 @@ export class WorkerManager {
   private heartbeatInterval: NodeJS.Timeout | null = null;
   private cleanupInterval: NodeJS.Timeout | null = null;
   private isShuttingDown: boolean = false;
+  private isProcessingRoom: boolean = false;
 
-  private roomPoller?: RoomPoller;
+  private roomSubscriber?: RoomSubscriber;
   private livekitClient?: LiveKitRoomClient;
   private audioStreamManager?: AudioStreamManager;
   private transcriptManager?: TranscriptManager;
@@ -53,51 +54,46 @@ export class WorkerManager {
   }
 
   private async runTranscriptionMode(): Promise<void> {
-    let consecutiveErrors = 0;
-    const MAX_CONSECUTIVE_ERRORS = 5;
+    logger.info('Starting room subscription for transcription mode');
 
-    while (!this.isShuttingDown) {
+    this.roomSubscriber = new RoomSubscriber(this.workerId);
+
+    await this.roomSubscriber.start(async (room) => {
+      if (this.isShuttingDown || this.isProcessingRoom) {
+        logger.warn({ roomId: room.id }, 'Ignoring room notification (shutting down or already processing)');
+        return;
+      }
+
+      this.isProcessingRoom = true;
+
       try {
-        logger.info('Polling for available rooms');
-
-        this.roomPoller = new RoomPoller(this.workerId, this.config.pollingIntervalMs);
-        const room = await this.roomPoller.start();
-
-        consecutiveErrors = 0;
-
-        logger.info({ roomId: room.id, roomName: room.room_name }, 'Claimed room, starting processing');
+        logger.info({ roomId: room.id, roomName: room.room_name }, 'Starting room processing');
 
         await this.processRoom(room);
 
         logger.info({ roomId: room.id }, 'Room processing completed');
-
-        this.currentRoomId = null;
       } catch (error) {
-        consecutiveErrors++;
-        logger.error({
-          error,
-          consecutiveErrors,
-          maxErrors: MAX_CONSECUTIVE_ERRORS,
-          roomId: this.currentRoomId
-        }, 'Error in transcription mode');
-
-        if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
-          logger.fatal('Too many consecutive errors, shutting down worker');
-          process.exit(1);
-        }
+        logger.error({ error, roomId: room.id }, 'Error processing room');
 
         if (this.currentRoomId) {
           await this.releaseRoom(this.currentRoomId).catch(err =>
             logger.error({ err }, 'Failed to release room during error recovery')
           );
-          this.currentRoomId = null;
         }
-
-        const backoffMs = Math.min(5000 * Math.pow(2, consecutiveErrors - 1), 30000);
-        logger.info({ backoffMs, consecutiveErrors }, 'Backing off before retry');
-        await new Promise((resolve) => setTimeout(resolve, backoffMs));
+      } finally {
+        this.currentRoomId = null;
+        this.isProcessingRoom = false;
       }
-    }
+    });
+
+    return new Promise((resolve) => {
+      const checkInterval = setInterval(() => {
+        if (this.isShuttingDown) {
+          clearInterval(checkInterval);
+          resolve();
+        }
+      }, 1000);
+    });
   }
 
   private async processRoom(room: Room): Promise<void> {
@@ -266,7 +262,7 @@ export class WorkerManager {
     this.isShuttingDown = true;
     logger.info({ workerId: this.workerId }, 'Starting graceful shutdown');
 
-    this.roomPoller?.stop();
+    await this.roomSubscriber?.stop();
 
     if (this.currentRoomId) {
       this.callEndDetector?.forceCallEnd();
