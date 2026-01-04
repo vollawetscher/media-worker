@@ -1,6 +1,6 @@
 # LiveKit Media Worker
 
-Stateless worker for processing LiveKit rooms with real-time Speech-to-Text (Speechmatics) and AI analysis (OpenAI/Anthropic).
+ Stateless worker for processing LiveKit rooms with real-time Speech-to-Text (Speechmatics) and AI analysis (OpenAI/Anthropic).
 
 **Repository**: [https://github.com/vollawetscher/media-worker](https://github.com/vollawetscher/media-worker)
 
