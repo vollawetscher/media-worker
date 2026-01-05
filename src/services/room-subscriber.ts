@@ -44,7 +44,12 @@ export class RoomSubscriber {
           table: 'rooms',
         },
         async (payload) => {
-          if (!this.isActive) return;
+          logger.info({ workerId: this.workerId, payload: payload.new }, '[REALTIME] Received INSERT event');
+
+          if (!this.isActive) {
+            logger.warn({ workerId: this.workerId }, '[REALTIME] Worker inactive, ignoring event');
+            return;
+          }
 
           const room = payload.new as any;
 
@@ -82,7 +87,12 @@ export class RoomSubscriber {
           table: 'rooms',
         },
         async (payload) => {
-          if (!this.isActive) return;
+          logger.info({ workerId: this.workerId, old: payload.old, new: payload.new }, '[REALTIME] Received UPDATE event');
+
+          if (!this.isActive) {
+            logger.warn({ workerId: this.workerId }, '[REALTIME] Worker inactive, ignoring UPDATE event');
+            return;
+          }
 
           const room = payload.new as any;
           const oldRoom = payload.old as any;
@@ -111,13 +121,17 @@ export class RoomSubscriber {
           }
         }
       )
-      .subscribe((status) => {
+      .subscribe((status, err) => {
+        logger.info({ workerId: this.workerId, status, error: err }, 'Realtime subscription status changed');
+
         if (status === 'SUBSCRIBED') {
           logger.info({ workerId: this.workerId }, 'Successfully subscribed to room notifications');
         } else if (status === 'CLOSED') {
           logger.warn({ workerId: this.workerId }, 'Room subscription closed');
         } else if (status === 'CHANNEL_ERROR') {
-          logger.error({ workerId: this.workerId }, 'Room subscription error');
+          logger.error({ workerId: this.workerId, error: err }, 'Room subscription error');
+        } else if (status === 'TIMED_OUT') {
+          logger.error({ workerId: this.workerId }, 'Room subscription timed out');
         }
       });
 
