@@ -2,6 +2,7 @@ import { getSupabase } from '../lib/supabase.js';
 import { createLogger } from '../lib/logger.js';
 import { Timebase } from '../lib/timebase.js';
 import { RoomSubscriber, Room } from './room-subscriber.js';
+import { RoomPoller } from './room-poller.js';
 import { TranscriptManager } from './transcript-manager.js';
 import { AudioStreamManager } from './audio-stream-manager.js';
 import { LiveKitRoomClient, LiveKitServerConfig } from './livekit-room.js';
@@ -12,16 +13,33 @@ import type { WorkerConfig } from '../config/index.js';
 
 const logger = createLogger({ component: 'WorkerManager' });
 
+interface RoomClaimAttempt {
+  roomId: string;
+  timestamp: Date;
+  success: boolean;
+  discoveryMethod: 'realtime' | 'notify' | 'startup' | 'polling';
+}
+
+interface DiscoveryMetrics {
+  realtimeCount: number;
+  notifyCount: number;
+  startupCount: number;
+  pollingCount: number;
+  totalClaims: number;
+}
+
 export class WorkerManager {
   private config: WorkerConfig;
   private workerId: string;
   private currentRoomId: string | null = null;
   private heartbeatInterval: NodeJS.Timeout | null = null;
   private cleanupInterval: NodeJS.Timeout | null = null;
+  private statsInterval: NodeJS.Timeout | null = null;
   private isShuttingDown: boolean = false;
   private isProcessingRoom: boolean = false;
 
   private roomSubscriber?: RoomSubscriber;
+  private roomPoller?: RoomPoller;
   private livekitClient?: LiveKitRoomClient;
   private audioStreamManager?: AudioStreamManager;
   private transcriptManager?: TranscriptManager;
@@ -29,18 +47,28 @@ export class WorkerManager {
   private aiJobProcessor?: AIJobProcessor;
   private timebase?: Timebase;
 
+  private recentClaimAttempts: RoomClaimAttempt[] = [];
+  private metrics: DiscoveryMetrics = {
+    realtimeCount: 0,
+    notifyCount: 0,
+    startupCount: 0,
+    pollingCount: 0,
+    totalClaims: 0,
+  };
+
   constructor(config: WorkerConfig) {
     this.config = config;
     this.workerId = config.workerId;
   }
 
   async start(): Promise<void> {
-    logger.info({ workerId: this.workerId, mode: this.config.mode }, 'Starting worker');
+    logger.info({ workerId: this.workerId, mode: this.config.mode, config: this.config }, 'Starting worker');
 
     await this.cleanupStaleWorkers();
     await this.registerWorker();
     this.startHeartbeat();
     this.startCleanupInterval();
+    this.startStatsReporting();
     this.setupShutdownHandlers();
 
     if (this.config.mode === 'ai-jobs' || this.config.mode === 'both') {
@@ -54,26 +82,41 @@ export class WorkerManager {
   }
 
   private async runTranscriptionMode(): Promise<void> {
-    logger.info('Starting room subscription for transcription mode');
+    logger.info('Starting hybrid room discovery (Realtime + NOTIFY + Polling)');
 
-    this.roomSubscriber = new RoomSubscriber(this.workerId);
-
-    await this.roomSubscriber.start(async (room) => {
+    const roomHandler = async (room: Room, discoveryMethod: 'realtime' | 'notify' | 'startup' | 'polling') => {
       if (this.isShuttingDown || this.isProcessingRoom) {
-        logger.warn({ roomId: room.id }, 'Ignoring room notification (shutting down or already processing)');
+        logger.warn({ roomId: room.id, discoveryMethod }, 'Ignoring room notification (shutting down or already processing)');
         return;
       }
 
+      if (this.wasRecentlyAttempted(room.id)) {
+        logger.debug({ roomId: room.id, discoveryMethod }, 'Skipping room (recently attempted by another discovery method)');
+        return;
+      }
+
+      this.recordClaimAttempt(room.id, true, discoveryMethod);
       this.isProcessingRoom = true;
 
+      this.metrics[`${discoveryMethod}Count`]++;
+      this.metrics.totalClaims++;
+
       try {
-        logger.info({ roomId: room.id, roomName: room.room_name }, 'Starting room processing');
+        logger.info(
+          {
+            roomId: room.id,
+            roomName: room.room_name,
+            discoveryMethod,
+            metrics: this.metrics
+          },
+          `[${discoveryMethod.toUpperCase()}] Starting room processing`
+        );
 
         await this.processRoom(room);
 
-        logger.info({ roomId: room.id }, 'Room processing completed');
+        logger.info({ roomId: room.id, discoveryMethod }, 'Room processing completed');
       } catch (error) {
-        logger.error({ error, roomId: room.id }, 'Error processing room');
+        logger.error({ error, roomId: room.id, discoveryMethod }, 'Error processing room');
 
         if (this.currentRoomId) {
           await this.releaseRoom(this.currentRoomId).catch(err =>
@@ -83,8 +126,20 @@ export class WorkerManager {
       } finally {
         this.currentRoomId = null;
         this.isProcessingRoom = false;
+        this.cleanupOldClaimAttempts();
       }
-    });
+    };
+
+    this.roomSubscriber = new RoomSubscriber(this.workerId, this.config);
+    await this.roomSubscriber.start(roomHandler);
+
+    if (this.config.enablePollingFallback) {
+      logger.info({ pollingInterval: this.config.pollingIntervalMs }, 'Starting polling fallback');
+      this.roomPoller = new RoomPoller(this.workerId, this.config.pollingIntervalMs);
+      await this.roomPoller.start(roomHandler);
+    } else {
+      logger.info('Polling fallback disabled by configuration');
+    }
 
     return new Promise((resolve) => {
       const checkInterval = setInterval(() => {
@@ -94,6 +149,52 @@ export class WorkerManager {
         }
       }, 1000);
     });
+  }
+
+  private wasRecentlyAttempted(roomId: string): boolean {
+    const cacheDuration = this.config.roomClaimCacheDurationMs;
+    const now = Date.now();
+
+    return this.recentClaimAttempts.some(
+      attempt =>
+        attempt.roomId === roomId &&
+        (now - attempt.timestamp.getTime()) < cacheDuration
+    );
+  }
+
+  private recordClaimAttempt(roomId: string, success: boolean, discoveryMethod: 'realtime' | 'notify' | 'startup' | 'polling'): void {
+    this.recentClaimAttempts.push({
+      roomId,
+      timestamp: new Date(),
+      success,
+      discoveryMethod,
+    });
+
+    if (this.recentClaimAttempts.length > 50) {
+      this.recentClaimAttempts = this.recentClaimAttempts.slice(-50);
+    }
+  }
+
+  private cleanupOldClaimAttempts(): void {
+    const cacheDuration = this.config.roomClaimCacheDurationMs;
+    const now = Date.now();
+
+    this.recentClaimAttempts = this.recentClaimAttempts.filter(
+      attempt => (now - attempt.timestamp.getTime()) < cacheDuration
+    );
+  }
+
+  private startStatsReporting(): void {
+    this.statsInterval = setInterval(() => {
+      const subscriberStats = this.roomSubscriber?.getStats();
+
+      logger.info({
+        workerId: this.workerId,
+        claimMetrics: this.metrics,
+        subscriberStats,
+        recentAttempts: this.recentClaimAttempts.length,
+      }, 'Discovery statistics');
+    }, 60000);
   }
 
   private async processRoom(room: Room): Promise<void> {
@@ -260,9 +361,10 @@ export class WorkerManager {
     }
 
     this.isShuttingDown = true;
-    logger.info({ workerId: this.workerId }, 'Starting graceful shutdown');
+    logger.info({ workerId: this.workerId, finalMetrics: this.metrics }, 'Starting graceful shutdown');
 
     await this.roomSubscriber?.stop();
+    await this.roomPoller?.stop();
 
     if (this.currentRoomId) {
       this.callEndDetector?.forceCallEnd();
@@ -279,6 +381,10 @@ export class WorkerManager {
       clearInterval(this.cleanupInterval);
     }
 
+    if (this.statsInterval) {
+      clearInterval(this.statsInterval);
+    }
+
     const supabase = getSupabase();
     await supabase
       .from('media_workers')
@@ -288,7 +394,7 @@ export class WorkerManager {
       })
       .eq('id', this.workerId);
 
-    logger.info({ workerId: this.workerId }, 'Shutdown complete');
+    logger.info({ workerId: this.workerId, finalMetrics: this.metrics }, 'Shutdown complete');
   }
 
   private async releaseRoom(roomId: string): Promise<void> {

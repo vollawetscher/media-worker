@@ -1,6 +1,8 @@
 import { RealtimeChannel } from '@supabase/supabase-js';
 import { getSupabase } from '../lib/supabase.js';
 import { createLogger } from '../lib/logger.js';
+import type { WorkerConfig } from '../config/index.js';
+import pg from 'pg';
 
 const logger = createLogger({ component: 'RoomSubscriber' });
 
@@ -14,25 +16,67 @@ export interface Room {
   transcription_enabled: boolean;
 }
 
-type RoomCallback = (room: Room) => void;
+export interface DiscoveryStats {
+  realtimeCount: number;
+  notifyCount: number;
+  startupCount: number;
+  lastRealtimeNotification: Date | null;
+  lastDatabaseNotification: Date | null;
+  realtimeHealthy: boolean;
+}
+
+type RoomCallback = (room: Room, discoveryMethod: 'realtime' | 'notify' | 'startup') => void;
 
 export class RoomSubscriber {
   private workerId: string;
+  private config: WorkerConfig;
   private channel: RealtimeChannel | null = null;
+  private pgClient: pg.Client | null = null;
   private onRoomClaimed: RoomCallback | null = null;
   private isActive: boolean = false;
+  private reconnectionTimer: NodeJS.Timeout | null = null;
+  private healthCheckTimer: NodeJS.Timeout | null = null;
 
-  constructor(workerId: string) {
+  private stats: DiscoveryStats = {
+    realtimeCount: 0,
+    notifyCount: 0,
+    startupCount: 0,
+    lastRealtimeNotification: null,
+    lastDatabaseNotification: null,
+    realtimeHealthy: false,
+  };
+
+  constructor(workerId: string, config: WorkerConfig) {
     this.workerId = workerId;
+    this.config = config;
+  }
+
+  getStats(): DiscoveryStats {
+    return { ...this.stats };
   }
 
   async start(onRoomClaimed: RoomCallback): Promise<void> {
     this.onRoomClaimed = onRoomClaimed;
     this.isActive = true;
 
+    logger.info({ workerId: this.workerId }, 'Starting room subscription with hybrid discovery');
+
+    await this.startRealtimeSubscription();
+
+    if (this.config.enableDatabaseNotify) {
+      await this.startDatabaseNotifications();
+    }
+
+    this.startHealthCheck();
+
+    logger.info({ workerId: this.workerId }, 'Checking for existing unclaimed rooms on startup');
+    await this.checkExistingRooms();
+  }
+
+  private async startRealtimeSubscription(): Promise<void> {
     const supabase = getSupabase();
 
-    logger.info({ workerId: this.workerId }, 'Starting room subscription');
+    logger.info({ workerId: this.workerId }, 'Starting Supabase Realtime subscription');
 
     this.channel = supabase
       .channel('room-notifications')
@@ -44,6 +88,9 @@ export class RoomSubscriber {
           table: 'rooms',
         },
         async (payload) => {
+          this.stats.lastRealtimeNotification = new Date();
+          this.stats.realtimeHealthy = true;
+
           logger.info({ workerId: this.workerId, payload: payload.new }, '[REALTIME] Received INSERT event');
 
           if (!this.isActive) {
@@ -53,18 +100,18 @@ export class RoomSubscriber {
 
           const room = payload.new as any;
 
-          // Only process rooms with pending or active status
           if (room.status !== 'pending' && room.status !== 'active') {
             logger.debug({ roomId: room.id, status: room.status }, 'Skipping room with non-claimable status');
             return;
           }
 
-          logger.info({ roomId: room.id, roomName: room.room_name, status: room.status }, 'New room detected, attempting to claim');
+          logger.info({ roomId: room.id, roomName: room.room_name, status: room.status }, '[REALTIME] New room detected, attempting to claim');
 
           const claimed = await this.claimRoom(room.id);
 
           if (claimed && this.onRoomClaimed) {
-            logger.info({ roomId: room.id, roomName: room.room_name }, 'Successfully claimed room');
+            this.stats.realtimeCount++;
+            logger.info({ roomId: room.id, roomName: room.room_name, stats: this.stats }, '[REALTIME] Successfully claimed room');
             this.onRoomClaimed({
               id: room.id,
               room_name: room.room_name,
@@ -73,9 +120,9 @@ export class RoomSubscriber {
               ai_enabled: room.ai_enabled,
               empty_timeout: room.empty_timeout,
               transcription_enabled: room.transcription_enabled,
-            });
+            }, 'realtime');
           } else {
-            logger.debug({ roomId: room.id }, 'Failed to claim room (another worker claimed it)');
+            logger.debug({ roomId: room.id }, '[REALTIME] Failed to claim room (another worker claimed it)');
           }
         }
       )
@@ -87,6 +134,9 @@ export class RoomSubscriber {
           table: 'rooms',
         },
         async (payload) => {
+          this.stats.lastRealtimeNotification = new Date();
+          this.stats.realtimeHealthy = true;
+
           logger.info({ workerId: this.workerId, old: payload.old, new: payload.new }, '[REALTIME] Received UPDATE event');
 
           if (!this.isActive) {
@@ -97,16 +147,15 @@ export class RoomSubscriber {
           const room = payload.new as any;
           const oldRoom = payload.old as any;
 
-          // Only process transitions to active status from non-active status
           if (oldRoom.status !== 'active' && room.status === 'active') {
-            // Only claim if unclaimed or already claimed by this worker
             if (!room.media_worker_id || room.media_worker_id === this.workerId) {
-              logger.info({ roomId: room.id, roomName: room.room_name }, 'Room became active, attempting to claim');
+              logger.info({ roomId: room.id, roomName: room.room_name }, '[REALTIME] Room became active, attempting to claim');
 
               const claimed = await this.claimRoom(room.id);
 
               if (claimed && this.onRoomClaimed) {
-                logger.info({ roomId: room.id, roomName: room.room_name }, 'Successfully claimed newly active room');
+                this.stats.realtimeCount++;
+                logger.info({ roomId: room.id, roomName: room.room_name, stats: this.stats }, '[REALTIME] Successfully claimed newly active room');
                 this.onRoomClaimed({
                   id: room.id,
                   room_name: room.room_name,
@@ -115,7 +164,7 @@ export class RoomSubscriber {
                   ai_enabled: room.ai_enabled,
                   empty_timeout: room.empty_timeout,
                   transcription_enabled: room.transcription_enabled,
-                });
+                }, 'realtime');
               }
             }
           }
@@ -125,27 +174,184 @@ export class RoomSubscriber {
         logger.info({ workerId: this.workerId, status, error: err }, 'Realtime subscription status changed');
 
         if (status === 'SUBSCRIBED') {
-          logger.info({ workerId: this.workerId }, 'Successfully subscribed to room notifications');
+          this.stats.realtimeHealthy = true;
+          logger.info({ workerId: this.workerId }, '✓ Successfully subscribed to Realtime notifications');
         } else if (status === 'CLOSED') {
-          logger.warn({ workerId: this.workerId }, 'Room subscription closed');
+          this.stats.realtimeHealthy = false;
+          logger.warn({ workerId: this.workerId }, '✗ Realtime subscription closed, will attempt reconnection');
+          this.scheduleReconnection();
         } else if (status === 'CHANNEL_ERROR') {
-          logger.error({ workerId: this.workerId, error: err }, 'Room subscription error');
+          this.stats.realtimeHealthy = false;
+          logger.error({ workerId: this.workerId, error: err }, '✗ Realtime subscription error');
+          this.scheduleReconnection();
         } else if (status === 'TIMED_OUT') {
-          logger.error({ workerId: this.workerId }, 'Room subscription timed out');
+          this.stats.realtimeHealthy = false;
+          logger.error({ workerId: this.workerId }, '✗ Realtime subscription timed out');
+          this.scheduleReconnection();
+        }
+      });
+  }
+
+  private async startDatabaseNotifications(): Promise<void> {
+    if (!this.config.supabase.databaseUrl) {
+      logger.info({ workerId: this.workerId }, 'Database URL not configured, skipping LISTEN/NOTIFY setup');
+      return;
+    }
+
+    try {
+      logger.info({ workerId: this.workerId }, 'Starting database LISTEN for pg_notify');
+
+      this.pgClient = new pg.Client({
+        connectionString: this.config.supabase.databaseUrl,
+        ssl: { rejectUnauthorized: false },
+      });
+
+      await this.pgClient.connect();
+
+      this.pgClient.on('notification', async (msg) => {
+        if (msg.channel === 'room_available' && msg.payload) {
+          this.stats.lastDatabaseNotification = new Date();
+
+          try {
+            const payload = JSON.parse(msg.payload);
+            logger.info({ workerId: this.workerId, payload }, '[NOTIFY] Received database notification');
+
+            if (!this.isActive) {
+              logger.warn({ workerId: this.workerId }, '[NOTIFY] Worker inactive, ignoring notification');
+              return;
+            }
+
+            const roomId = payload.room_id;
+            const status = payload.status;
+
+            if (status !== 'pending' && status !== 'active') {
+              logger.debug({ roomId, status }, '[NOTIFY] Skipping room with non-claimable status');
+              return;
+            }
+
+            logger.info({ roomId, status }, '[NOTIFY] Room available, attempting to claim');
+
+            const claimed = await this.claimRoom(roomId);
+
+            if (claimed && this.onRoomClaimed) {
+              this.stats.notifyCount++;
+
+              const { data: room, error } = await getSupabase()
+                .from('rooms')
+                .select('*')
+                .eq('id', roomId)
+                .single();
+
+              if (!error && room) {
+                logger.info({ roomId, roomName: room.room_name, stats: this.stats }, '[NOTIFY] Successfully claimed room');
+                this.onRoomClaimed({
+                  id: room.id,
+                  room_name: room.room_name,
+                  server_id: room.server_id,
+                  status: room.status,
+                  ai_enabled: room.ai_enabled,
+                  empty_timeout: room.empty_timeout,
+                  transcription_enabled: room.transcription_enabled,
+                }, 'notify');
+              }
+            } else {
+              logger.debug({ roomId }, '[NOTIFY] Failed to claim room (another worker claimed it)');
+            }
+          } catch (err) {
+            logger.error({ error: err }, '[NOTIFY] Failed to parse notification payload');
+          }
         }
       });
 
-    logger.info({ workerId: this.workerId }, 'Checking for existing unclaimed rooms on startup');
-    await this.checkExistingRooms();
+      await this.pgClient.query('LISTEN room_available');
+      logger.info({ workerId: this.workerId }, '✓ Successfully listening for database notifications');
+
+    } catch (err) {
+      logger.error({ error: err }, '✗ Failed to setup database LISTEN, continuing without it');
+      this.pgClient = null;
+    }
+  }
+
+  private startHealthCheck(): void {
+    this.healthCheckTimer = setInterval(() => {
+      const timeSinceLastRealtime = this.stats.lastRealtimeNotification
+        ? Date.now() - this.stats.lastRealtimeNotification.getTime()
+        : null;
+
+      if (timeSinceLastRealtime && timeSinceLastRealtime > 60000) {
+        if (this.stats.realtimeHealthy) {
+          logger.warn(
+            { timeSinceLastRealtime, workerId: this.workerId },
+            'Realtime appears unhealthy - no notifications for 60+ seconds'
+          );
+          this.stats.realtimeHealthy = false;
+        }
+      }
+
+      logger.debug({
+        workerId: this.workerId,
+        stats: this.stats,
+        timeSinceLastRealtime
+      }, 'Health check');
+
+    }, 30000);
+  }
+
+  private scheduleReconnection(): void {
+    if (this.reconnectionTimer) {
+      return;
+    }
+
+    logger.info(
+      { workerId: this.workerId, retryInterval: this.config.realtimeRetryIntervalMs },
+      'Scheduling Realtime reconnection attempt'
+    );
+
+    this.reconnectionTimer = setTimeout(async () => {
+      this.reconnectionTimer = null;
+
+      if (!this.isActive) {
+        return;
+      }
+
+      logger.info({ workerId: this.workerId }, 'Attempting to reconnect Realtime subscription');
+
+      if (this.channel) {
+        await this.channel.unsubscribe();
+        this.channel = null;
+      }
+
+      await this.startRealtimeSubscription();
+    }, this.config.realtimeRetryIntervalMs);
   }
 
   async stop(): Promise<void> {
-    logger.info({ workerId: this.workerId }, 'Stopping room subscription');
+    logger.info({ workerId: this.workerId, finalStats: this.stats }, 'Stopping room subscription');
     this.isActive = false;
+
+    if (this.reconnectionTimer) {
+      clearTimeout(this.reconnectionTimer);
+      this.reconnectionTimer = null;
+    }
+
+    if (this.healthCheckTimer) {
+      clearInterval(this.healthCheckTimer);
+      this.healthCheckTimer = null;
+    }
 
     if (this.channel) {
       await this.channel.unsubscribe();
       this.channel = null;
+    }
+
+    if (this.pgClient) {
+      try {
+        await this.pgClient.query('UNLISTEN room_available');
+        await this.pgClient.end();
+      } catch (err) {
+        logger.error({ error: err }, 'Error closing database notification client');
+      }
+      this.pgClient = null;
     }
 
     this.onRoomClaimed = null;
@@ -168,17 +374,18 @@ export class RoomSubscriber {
     }
 
     if (!rooms || rooms.length === 0) {
-      logger.debug('No existing unclaimed rooms found');
+      logger.debug('No existing unclaimed rooms found on startup');
       return;
     }
 
     const room = rooms[0];
-    logger.info({ roomId: room.id, roomName: room.room_name }, 'Found existing unclaimed room on startup');
+    logger.info({ roomId: room.id, roomName: room.room_name }, '[STARTUP] Found existing unclaimed room');
 
     const claimed = await this.claimRoom(room.id);
 
     if (claimed && this.onRoomClaimed) {
-      logger.info({ roomId: room.id, roomName: room.room_name }, 'Successfully claimed existing room');
+      this.stats.startupCount++;
+      logger.info({ roomId: room.id, roomName: room.room_name, stats: this.stats }, '[STARTUP] Successfully claimed existing room');
       this.onRoomClaimed({
         id: room.id,
         room_name: room.room_name,
@@ -187,7 +394,7 @@ export class RoomSubscriber {
         ai_enabled: room.ai_enabled,
         empty_timeout: room.empty_timeout,
         transcription_enabled: room.transcription_enabled,
-      });
+      }, 'startup');
     }
   }
 

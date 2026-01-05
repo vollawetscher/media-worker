@@ -13,49 +13,53 @@ export interface Room {
   transcription_enabled: boolean;
 }
 
+type RoomCallback = (room: Room, discoveryMethod: 'polling') => void;
+
 export class RoomPoller {
   private workerId: string;
   private pollingIntervalMs: number;
   private pollingTimer: NodeJS.Timeout | null = null;
   private isPolling: boolean = false;
+  private onRoomFound: RoomCallback | null = null;
 
   constructor(workerId: string, pollingIntervalMs: number) {
     this.workerId = workerId;
     this.pollingIntervalMs = pollingIntervalMs;
   }
 
-  async start(): Promise<Room> {
-    logger.info({ workerId: this.workerId }, 'Starting room polling');
+  async start(onRoomFound: RoomCallback): Promise<void> {
+    logger.info({ workerId: this.workerId, pollingInterval: this.pollingIntervalMs }, '[POLLING] Starting continuous room polling');
     this.isPolling = true;
+    this.onRoomFound = onRoomFound;
 
-    return new Promise((resolve, reject) => {
-      const poll = async () => {
-        if (!this.isPolling) {
-          reject(new Error('Polling stopped'));
-          return;
+    const poll = async () => {
+      if (!this.isPolling) {
+        return;
+      }
+
+      try {
+        const room = await this.pollForRoom();
+        if (room && this.onRoomFound) {
+          logger.info({ roomId: room.id, roomName: room.room_name }, '[POLLING] Found room, invoking callback');
+          this.onRoomFound(room, 'polling');
         }
+      } catch (error) {
+        logger.error({ error, workerId: this.workerId }, '[POLLING] Error polling for rooms');
+      }
 
-        try {
-          const room = await this.pollForRoom();
-          if (room) {
-            this.stop();
-            resolve(room);
-          } else {
-            this.pollingTimer = setTimeout(poll, this.pollingIntervalMs);
-          }
-        } catch (error) {
-          logger.error({ error, workerId: this.workerId }, 'Error polling for rooms');
-          this.pollingTimer = setTimeout(poll, this.pollingIntervalMs);
-        }
-      };
+      if (this.isPolling) {
+        this.pollingTimer = setTimeout(poll, this.pollingIntervalMs);
+      }
+    };
 
-      poll();
-    });
+    poll();
   }
 
-  stop(): void {
-    logger.info({ workerId: this.workerId }, 'Stopping room polling');
+  async stop(): Promise<void> {
+    logger.info({ workerId: this.workerId }, '[POLLING] Stopping room polling');
     this.isPolling = false;
+    this.onRoomFound = null;
+
     if (this.pollingTimer) {
       clearTimeout(this.pollingTimer);
       this.pollingTimer = null;
@@ -74,26 +78,26 @@ export class RoomPoller {
       .limit(1);
 
     if (error) {
-      logger.error({ error }, 'Failed to query for available rooms');
+      logger.error({ error }, '[POLLING] Failed to query for available rooms');
       return null;
     }
 
     if (!rooms || rooms.length === 0) {
-      logger.debug('No available rooms found');
+      logger.debug('[POLLING] No available rooms found');
       return null;
     }
 
     const room = rooms[0];
-    logger.info({ roomId: room.id, roomName: room.room_name }, 'Found available room, attempting to claim');
+    logger.info({ roomId: room.id, roomName: room.room_name }, '[POLLING] Found available room, attempting to claim');
 
     const claimed = await this.claimRoom(room.id);
 
     if (claimed) {
-      logger.info({ roomId: room.id, roomName: room.room_name }, 'Successfully claimed room');
+      logger.info({ roomId: room.id, roomName: room.room_name }, '[POLLING] Successfully claimed room');
       return room as Room;
     }
 
-    logger.debug({ roomId: room.id }, 'Failed to claim room (another worker claimed it)');
+    logger.debug({ roomId: room.id }, '[POLLING] Failed to claim room (another worker claimed it)');
     return null;
   }
 

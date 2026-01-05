@@ -1,5 +1,7 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import WebSocket from 'ws';
 import type { WorkerConfig } from '../config/index.js';
+import { logger } from './logger.js';
 
 let supabaseClient: SupabaseClient | null = null;
 
@@ -13,8 +15,27 @@ export function initSupabase(config: WorkerConfig): SupabaseClient {
           autoRefreshToken: false,
           persistSession: false,
         },
+        realtime: {
+          transport: WebSocket as any,
+          timeout: config.realtimeTimeoutMs,
+          params: {
+            eventsPerSecond: 10,
+          },
+        },
+        global: {
+          headers: {
+            'X-Worker-ID': config.workerId,
+          },
+        },
       }
     );
+
+    logger.info({
+      workerId: config.workerId,
+      realtimeTimeout: config.realtimeTimeoutMs,
+      enablePollingFallback: config.enablePollingFallback,
+      enableDatabaseNotify: config.enableDatabaseNotify,
+    }, 'Supabase client initialized');
   }
   return supabaseClient;
 }
