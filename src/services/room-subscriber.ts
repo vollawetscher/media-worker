@@ -42,13 +42,19 @@ export class RoomSubscriber {
           event: 'INSERT',
           schema: 'public',
           table: 'rooms',
-          filter: 'status=in.(pending,active)',
         },
         async (payload) => {
           if (!this.isActive) return;
 
           const room = payload.new as any;
-          logger.info({ roomId: room.id, roomName: room.room_name }, 'New room detected, attempting to claim');
+
+          // Only process rooms with pending or active status
+          if (room.status !== 'pending' && room.status !== 'active') {
+            logger.debug({ roomId: room.id, status: room.status }, 'Skipping room with non-claimable status');
+            return;
+          }
+
+          logger.info({ roomId: room.id, roomName: room.room_name, status: room.status }, 'New room detected, attempting to claim');
 
           const claimed = await this.claimRoom(room.id);
 
@@ -74,7 +80,6 @@ export class RoomSubscriber {
           event: 'UPDATE',
           schema: 'public',
           table: 'rooms',
-          filter: 'status=eq.active',
         },
         async (payload) => {
           if (!this.isActive) return;
@@ -82,7 +87,9 @@ export class RoomSubscriber {
           const room = payload.new as any;
           const oldRoom = payload.old as any;
 
+          // Only process transitions to active status from non-active status
           if (oldRoom.status !== 'active' && room.status === 'active') {
+            // Only claim if unclaimed or already claimed by this worker
             if (!room.media_worker_id || room.media_worker_id === this.workerId) {
               logger.info({ roomId: room.id, roomName: room.room_name }, 'Room became active, attempting to claim');
 
