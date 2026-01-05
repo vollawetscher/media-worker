@@ -132,6 +132,7 @@ export class RoomSubscriber {
           event: 'UPDATE',
           schema: 'public',
           table: 'rooms',
+          filter: `media_worker_id=eq.${this.workerId}`,
         },
         async (payload) => {
           this.stats.lastRealtimeNotification = new Date();
@@ -278,14 +279,13 @@ export class RoomSubscriber {
         ? Date.now() - this.stats.lastRealtimeNotification.getTime()
         : null;
 
-      if (timeSinceLastRealtime && timeSinceLastRealtime > 60000) {
-        if (this.stats.realtimeHealthy) {
-          logger.warn(
-            { timeSinceLastRealtime, workerId: this.workerId },
-            'Realtime appears unhealthy - no notifications for 60+ seconds'
-          );
-          this.stats.realtimeHealthy = false;
-        }
+      // Only warn if we haven't received notifications in 5 minutes AND the channel reports unhealthy
+      // Quiet periods are normal and don't indicate problems
+      if (timeSinceLastRealtime && timeSinceLastRealtime > 300000 && !this.stats.realtimeHealthy) {
+        logger.warn(
+          { timeSinceLastRealtime, workerId: this.workerId },
+          'Realtime connection may be unhealthy - no notifications for 5+ minutes'
+        );
       }
 
       logger.debug({
