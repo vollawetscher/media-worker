@@ -18,6 +18,7 @@ primary_region = 'fra'
   auto_stop_machines = false
   auto_start_machines = false
   min_machines_running = 2
+  processes = ["transcription", "ai-jobs"]
 
   [[http_service.checks]]
     grace_period = "10s"
