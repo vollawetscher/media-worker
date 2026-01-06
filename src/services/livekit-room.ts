@@ -76,7 +76,10 @@ export class LiveKitRoomClient {
       logger.warn({ roomName: this.roomName }, 'Disconnected from LiveKit room');
     });
 
-    await this.room.connect(this.serverConfig.server_url, token);
+    await this.room.connect(this.serverConfig.server_url, token, {
+      autoSubscribe: true,
+      dynacast: true,
+    });
 
     logger.info(
       {
