@@ -110,8 +110,22 @@ export class SpeechmaticsStreamClient {
           }
         });
 
-        this.ws.on('close', () => {
-          logger.info({ sessionId: this.sessionId }, 'WebSocket closed');
+        this.ws.on('close', (code: number, reason: Buffer) => {
+          const reasonString = reason.toString();
+          logger.warn(
+            {
+              sessionId: this.sessionId,
+              code,
+              reason: reasonString,
+              wasActive: this.isActive
+            },
+            'WebSocket closed'
+          );
+
+          if (code !== 1000 && reasonString) {
+            this.updateSessionStatus('failed', `WebSocket closed with code ${code}: ${reasonString}`);
+          }
+
           this.isActive = false;
         });
       } catch (error) {
@@ -147,7 +161,7 @@ export class SpeechmaticsStreamClient {
 
   private handleMessage(data: WebSocket.Data): void {
     try {
-      const message: SpeechmaticsMessage = JSON.parse(data.toString());
+      const message: any = JSON.parse(data.toString());
 
       if (message.message === 'RecognitionStarted') {
         logger.info({ sessionId: this.sessionId }, 'Recognition started');
@@ -158,6 +172,35 @@ export class SpeechmaticsStreamClient {
         this.handleTranscript(message, true);
       } else if (message.message === 'EndOfTranscript') {
         logger.info({ sessionId: this.sessionId }, 'End of transcript');
+      } else if (message.message === 'Error') {
+        logger.error(
+          {
+            sessionId: this.sessionId,
+            errorType: message.type,
+            reason: message.reason,
+            fullMessage: message
+          },
+          'Speechmatics error received'
+        );
+        this.updateSessionStatus('failed', `Speechmatics error: ${message.reason || message.type}`);
+      } else if (message.message === 'Warning') {
+        logger.warn(
+          {
+            sessionId: this.sessionId,
+            warningType: message.type,
+            reason: message.reason
+          },
+          'Speechmatics warning received'
+        );
+      } else {
+        logger.debug(
+          {
+            sessionId: this.sessionId,
+            messageType: message.message,
+            fullMessage: message
+          },
+          'Unhandled Speechmatics message'
+        );
       }
     } catch (error) {
       logger.error({ error, sessionId: this.sessionId }, 'Error handling Speechmatics message');
