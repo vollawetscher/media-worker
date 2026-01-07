@@ -43,6 +43,12 @@ export class SpeechmaticsStreamClient {
   private transcriptCount: number = 0;
   private confidenceSum: number = 0;
   private startTime: Date | null = null;
+  private transcriptBuffer: string = '';
+  private bufferStartTime: number | null = null;
+  private bufferEndTime: number | null = null;
+  private bufferConfidences: number[] = [];
+  private flushTimer: NodeJS.Timeout | null = null;
+  private readonly BUFFER_FLUSH_MS = 2000;
 
   constructor(
     roomId: string,
@@ -149,6 +155,13 @@ export class SpeechmaticsStreamClient {
 
     logger.info({ sessionId: this.sessionId }, 'Stopping Speechmatics session');
 
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = null;
+    }
+
+    this.flushBuffer();
+
     try {
       this.ws.send(JSON.stringify({ message: 'EndOfStream' }));
     } catch (error) {
@@ -218,7 +231,7 @@ export class SpeechmaticsStreamClient {
   }
 
   private handleTranscript(message: SpeechmaticsMessage, isFinal: boolean): void {
-    if (!message.metadata) {
+    if (!message.metadata || !isFinal) {
       return;
     }
 
@@ -231,19 +244,28 @@ export class SpeechmaticsStreamClient {
       ? message.results.reduce((sum, r) => sum + (r.alternatives[0]?.confidence || 0), 0) / message.results.length
       : 0.8;
 
-    this.transcriptCount++;
-    this.confidenceSum += confidence;
+    this.bufferConfidences.push(confidence);
 
-    this.transcriptManager.writeTranscript({
-      speechmaticsSessionId: this.sessionDbId!,
-      participantId: this.participantId,
-      text,
-      isFinal,
-      confidence,
-      startTime: message.metadata.start_time,
-      endTime: message.metadata.end_time,
-      language: this.config.language,
-    });
+    if (this.bufferStartTime === null) {
+      this.bufferStartTime = message.metadata.start_time;
+    }
+    this.bufferEndTime = message.metadata.end_time;
+
+    if (this.transcriptBuffer.length > 0 && !this.transcriptBuffer.endsWith(' ')) {
+      this.transcriptBuffer += ' ';
+    }
+    this.transcriptBuffer += text;
+
+    const shouldFlush = this.shouldFlushBuffer(text);
+
+    if (shouldFlush) {
+      this.flushBuffer();
+    } else {
+      if (this.flushTimer) {
+        clearTimeout(this.flushTimer);
+      }
+      this.flushTimer = setTimeout(() => this.flushBuffer(), this.BUFFER_FLUSH_MS);
+    }
 
     logger.debug(
       {
@@ -251,9 +273,62 @@ export class SpeechmaticsStreamClient {
         isFinal,
         confidence,
         textLength: text.length,
+        bufferLength: this.transcriptBuffer.length,
+        shouldFlush,
       },
       'Transcript received'
     );
+  }
+
+  private shouldFlushBuffer(text: string): boolean {
+    const trimmedText = text.trim();
+    const endsWithSentenceTerminator = /[.!?]$/.test(trimmedText);
+    const bufferTooLong = this.transcriptBuffer.length > 500;
+
+    return endsWithSentenceTerminator || bufferTooLong;
+  }
+
+  private flushBuffer(): void {
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = null;
+    }
+
+    if (this.transcriptBuffer.trim().length === 0) {
+      return;
+    }
+
+    const avgConfidence = this.bufferConfidences.length > 0
+      ? this.bufferConfidences.reduce((sum, c) => sum + c, 0) / this.bufferConfidences.length
+      : 0.8;
+
+    this.transcriptCount++;
+    this.confidenceSum += avgConfidence;
+
+    this.transcriptManager.writeTranscript({
+      speechmaticsSessionId: this.sessionDbId!,
+      participantId: this.participantId,
+      text: this.transcriptBuffer.trim(),
+      isFinal: true,
+      confidence: avgConfidence,
+      startTime: this.bufferStartTime!,
+      endTime: this.bufferEndTime!,
+      language: this.config.language,
+    });
+
+    logger.debug(
+      {
+        sessionId: this.sessionId,
+        textLength: this.transcriptBuffer.length,
+        confidence: avgConfidence,
+      },
+      'Flushed transcript buffer'
+    );
+
+    this.transcriptBuffer = '';
+    this.bufferStartTime = null;
+    this.bufferEndTime = null;
+    this.bufferConfidences = [];
   }
 
   private async createSessionRecord(): Promise<void> {
