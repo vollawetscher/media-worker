@@ -247,6 +247,10 @@ export class LiveKitRoomClient {
 
   async disconnect(): Promise<void> {
     logger.info({ roomName: this.roomName }, 'Disconnecting from LiveKit room');
+
+    // Remove all event listeners to prevent memory leaks
+    this.room.removeAllListeners();
+
     await this.room.disconnect();
   }
 

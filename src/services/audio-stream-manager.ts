@@ -88,14 +88,28 @@ export class AudioStreamManager {
     const client = this.activeSessions.get(sessionKey);
     const processor = this.audioProcessors.get(sessionKey);
 
+    // Stop processor with error handling - always delete from map
     if (processor) {
-      await processor.stop();
-      this.audioProcessors.delete(sessionKey);
+      try {
+        await processor.stop();
+      } catch (error) {
+        logger.error({ error, sessionKey }, 'Error stopping audio processor');
+      } finally {
+        // Always remove from map even if stop() throws to prevent memory leak
+        this.audioProcessors.delete(sessionKey);
+      }
     }
 
+    // Stop client with error handling - always delete from map
     if (client) {
-      await client.stop();
-      this.activeSessions.delete(sessionKey);
+      try {
+        await client.stop();
+      } catch (error) {
+        logger.error({ error, sessionKey }, 'Error stopping Speechmatics client');
+      } finally {
+        // Always remove from map even if stop() throws to prevent memory leak
+        this.activeSessions.delete(sessionKey);
+      }
     }
 
     logger.info({ sessionKey }, 'Stopped session');
@@ -125,6 +139,8 @@ class AudioProcessor {
   private onAudioData: (data: Buffer) => void;
   private isRunning: boolean = false;
   private processingTask: Promise<void> | null = null;
+  private monoBuffer: Int16Array | null = null; // Reusable buffer for stereo->mono conversion
+  private readonly MAX_SAMPLES_PER_CHANNEL = 4800; // ~300ms at 16kHz (should cover most frames)
 
   constructor(track: RemoteTrack, onAudioData: (data: Buffer) => void) {
     this.track = track;
@@ -174,15 +190,38 @@ class AudioProcessor {
     const data = frame.data;
 
     if (frame.channels === 1) {
+      // Mono audio - return directly without copying
       return Buffer.from(data.buffer, data.byteOffset, data.byteLength);
     } else if (frame.channels === 2) {
-      const monoSamples = new Int16Array(frame.samplesPerChannel);
-      for (let i = 0; i < frame.samplesPerChannel; i++) {
-        monoSamples[i] = Math.floor((data[i * 2] + data[i * 2 + 1]) / 2);
+      // Stereo to mono conversion - reuse buffer to reduce allocations
+      if (!this.monoBuffer || this.monoBuffer.length < frame.samplesPerChannel) {
+        // Allocate or grow buffer only when needed
+        const newSize = Math.max(frame.samplesPerChannel, this.MAX_SAMPLES_PER_CHANNEL);
+        this.monoBuffer = new Int16Array(newSize);
+        logger.debug(
+          {
+            trackSid: this.track.sid,
+            bufferSize: newSize,
+            samplesPerChannel: frame.samplesPerChannel
+          },
+          'Allocated/resized mono buffer for stereo->mono conversion'
+        );
       }
-      return Buffer.from(monoSamples.buffer, monoSamples.byteOffset, monoSamples.byteLength);
+
+      // Mix stereo channels to mono
+      for (let i = 0; i < frame.samplesPerChannel; i++) {
+        this.monoBuffer[i] = Math.floor((data[i * 2] + data[i * 2 + 1]) / 2);
+      }
+
+      // Return only the portion of the buffer that contains actual data
+      return Buffer.from(
+        this.monoBuffer.buffer,
+        this.monoBuffer.byteOffset,
+        frame.samplesPerChannel * 2
+      );
     }
 
+    // Fallback for other channel configurations
     return Buffer.from(data.buffer, data.byteOffset, data.byteLength);
   }
 
@@ -198,5 +237,8 @@ class AudioProcessor {
       await this.processingTask;
       this.processingTask = null;
     }
+
+    // Free the reusable buffer to prevent memory leak
+    this.monoBuffer = null;
   }
 }

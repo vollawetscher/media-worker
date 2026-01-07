@@ -149,11 +149,21 @@ export class SpeechmaticsStreamClient {
 
     logger.info({ sessionId: this.sessionId }, 'Stopping Speechmatics session');
 
-    this.ws.send(JSON.stringify({ message: 'EndOfStream' }));
+    try {
+      this.ws.send(JSON.stringify({ message: 'EndOfStream' }));
+    } catch (error) {
+      logger.warn({ error, sessionId: this.sessionId }, 'Error sending EndOfStream');
+    }
 
     await new Promise((resolve) => setTimeout(resolve, 500));
 
-    this.ws?.close();
+    // Remove all event listeners to prevent memory leaks
+    if (this.ws) {
+      this.ws.removeAllListeners();
+      this.ws.close();
+      this.ws = null;
+    }
+
     this.isActive = false;
 
     await this.finalizeSessionRecord();

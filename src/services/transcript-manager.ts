@@ -23,7 +23,9 @@ export class TranscriptManager {
   private batchTimer: NodeJS.Timeout | null = null;
   private readonly BATCH_SIZE = 10;
   private readonly BATCH_INTERVAL_MS = 100;
+  private readonly MAX_QUEUE_SIZE = 500; // Prevent unbounded growth (prevents memory leak if DB fails)
   private organizationId: string | null = null;
+  private droppedTranscriptCount: number = 0;
 
   constructor(roomId: string, timebase: Timebase) {
     this.roomId = roomId;
@@ -33,6 +35,20 @@ export class TranscriptManager {
   async writeTranscript(data: TranscriptData): Promise<void> {
     if (!data.isFinal) {
       return;
+    }
+
+    // Prevent unbounded queue growth - drop oldest transcripts if queue is full
+    if (this.batchQueue.length >= this.MAX_QUEUE_SIZE) {
+      const dropped = this.batchQueue.shift();
+      this.droppedTranscriptCount++;
+      logger.warn(
+        {
+          roomId: this.roomId,
+          queueSize: this.batchQueue.length,
+          droppedCount: this.droppedTranscriptCount
+        },
+        'Transcript queue full, dropping oldest transcript'
+      );
     }
 
     this.batchQueue.push({ ...data, timestamp: new Date() });
@@ -93,7 +109,22 @@ export class TranscriptManager {
 
     if (error) {
       logger.error({ error, batchSize: records.length }, 'Failed to insert transcript batch');
-      this.batchQueue.unshift(...batch);
+
+      // Only re-add to queue if we're not near capacity to prevent unbounded growth
+      if (this.batchQueue.length + batch.length <= this.MAX_QUEUE_SIZE) {
+        this.batchQueue.unshift(...batch);
+      } else {
+        logger.error(
+          {
+            roomId: this.roomId,
+            currentQueueSize: this.batchQueue.length,
+            batchSize: batch.length,
+            maxQueueSize: this.MAX_QUEUE_SIZE
+          },
+          'Cannot re-add failed batch - queue at capacity, transcripts will be lost'
+        );
+      }
+
       throw error;
     }
 

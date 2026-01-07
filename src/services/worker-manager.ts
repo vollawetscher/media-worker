@@ -148,6 +148,13 @@ export class WorkerManager {
           resolve();
         }
       }, 1000);
+
+      // Ensure interval is cleared even if Promise is abandoned
+      // Store it so shutdown can clean it up
+      if (this.cleanupInterval) {
+        clearInterval(this.cleanupInterval);
+      }
+      this.cleanupInterval = checkInterval as any;
     });
   }
 
@@ -234,13 +241,30 @@ export class WorkerManager {
     const initialCount = this.livekitClient.getHumanParticipantCount();
     this.callEndDetector.updateParticipantCount(initialCount);
 
-    return new Promise((resolve) => {
-      const checkInterval = setInterval(() => {
+    return new Promise((resolve, reject) => {
+      let checkInterval: NodeJS.Timeout | null = null;
+
+      checkInterval = setInterval(() => {
         if (this.isShuttingDown || !this.livekitClient?.isConnected()) {
-          clearInterval(checkInterval);
+          if (checkInterval) {
+            clearInterval(checkInterval);
+            checkInterval = null;
+          }
           resolve();
         }
       }, 1000);
+
+      // Ensure interval cleanup on errors or shutdown
+      const cleanup = () => {
+        if (checkInterval) {
+          clearInterval(checkInterval);
+          checkInterval = null;
+        }
+      };
+
+      // Clean up if worker is shut down externally
+      process.once('SIGTERM', cleanup);
+      process.once('SIGINT', cleanup);
     });
   }
 
