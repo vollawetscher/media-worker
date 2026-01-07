@@ -14,7 +14,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.32.0",
-    "@livekit/rtc-node": "0.13.20",
+    "@livekit/rtc-node": "0.13.21",
     "@supabase/supabase-js": "^2.57.4",
     "dotenv": "^16.6.1",
     "livekit-client": "^2.8.0",
