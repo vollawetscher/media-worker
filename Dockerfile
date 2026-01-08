@@ -1,5 +1,10 @@
 FROM node:20-slim
 
+# Install CA certificates and OpenSSL for HTTPS connections
+RUN apt-get update && \
+    apt-get install -y ca-certificates openssl && \
+    rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 # Copy package files
