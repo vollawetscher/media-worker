@@ -163,7 +163,7 @@ export class SpeechmaticsStreamClient {
     this.flushBuffer();
 
     try {
-      this.ws.send(JSON.stringify({ message: 'EndOfStream' }));
+      this.ws.send(Buffer.alloc(0));
     } catch (error) {
       logger.warn({ error, sessionId: this.sessionId }, 'Error sending EndOfStream');
     }
