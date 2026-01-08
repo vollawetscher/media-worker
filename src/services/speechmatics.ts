@@ -294,7 +294,29 @@ export class SpeechmaticsStreamClient {
       this.flushTimer = null;
     }
 
-    if (this.transcriptBuffer.trim().length === 0) {
+    const trimmedText = this.transcriptBuffer.trim();
+
+    if (trimmedText.length === 0) {
+      this.resetBuffer();
+      return;
+    }
+
+    const textWithoutPunctuation = trimmedText.replace(/[^\w\s]/g, '');
+    if (textWithoutPunctuation.trim().length === 0) {
+      logger.debug(
+        { sessionId: this.sessionId, text: trimmedText },
+        'Skipping punctuation-only transcript'
+      );
+      this.resetBuffer();
+      return;
+    }
+
+    if (trimmedText.length < 2) {
+      logger.debug(
+        { sessionId: this.sessionId, text: trimmedText },
+        'Skipping too-short transcript'
+      );
+      this.resetBuffer();
       return;
     }
 
@@ -308,7 +330,7 @@ export class SpeechmaticsStreamClient {
     this.transcriptManager.writeTranscript({
       speechmaticsSessionId: this.sessionDbId!,
       participantId: this.participantId,
-      text: this.transcriptBuffer.trim(),
+      text: trimmedText,
       isFinal: true,
       confidence: avgConfidence,
       startTime: this.bufferStartTime!,
@@ -319,12 +341,16 @@ export class SpeechmaticsStreamClient {
     logger.debug(
       {
         sessionId: this.sessionId,
-        textLength: this.transcriptBuffer.length,
+        textLength: trimmedText.length,
         confidence: avgConfidence,
       },
       'Flushed transcript buffer'
     );
 
+    this.resetBuffer();
+  }
+
+  private resetBuffer(): void {
     this.transcriptBuffer = '';
     this.bufferStartTime = null;
     this.bufferEndTime = null;
