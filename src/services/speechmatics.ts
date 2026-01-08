@@ -48,7 +48,7 @@ export class SpeechmaticsStreamClient {
   private bufferEndTime: number | null = null;
   private bufferConfidences: number[] = [];
   private flushTimer: NodeJS.Timeout | null = null;
-  private readonly BUFFER_FLUSH_MS = 2000;
+  private readonly BUFFER_FLUSH_MS = 3000; // Increased to allow more natural sentence groupings
 
   constructor(
     roomId: string,
@@ -283,9 +283,22 @@ export class SpeechmaticsStreamClient {
   private shouldFlushBuffer(text: string): boolean {
     const trimmedText = text.trim();
     const endsWithSentenceTerminator = /[.!?]$/.test(trimmedText);
-    const bufferTooLong = this.transcriptBuffer.length > 500;
+    const bufferLength = this.transcriptBuffer.length;
 
-    return endsWithSentenceTerminator || bufferTooLong;
+    // Flush if buffer is getting too long (prevents memory issues)
+    if (bufferLength > 500) {
+      return true;
+    }
+
+    // Only flush on sentence terminators if we have substantial content
+    // This allows multiple short sentences to group together naturally
+    if (endsWithSentenceTerminator && bufferLength > 50) {
+      return true;
+    }
+
+    // Don't flush immediately on sentence terminators - let timer handle it
+    // This allows natural pauses to group related sentences
+    return false;
   }
 
   private flushBuffer(): void {
@@ -301,20 +314,11 @@ export class SpeechmaticsStreamClient {
       return;
     }
 
-    const textWithoutPunctuation = trimmedText.replace(/[^\w\s]/g, '');
-    if (textWithoutPunctuation.trim().length === 0) {
+    // Only skip if it's a single punctuation character (e.g., "." or "?")
+    if (trimmedText.length === 1 && /^[^\w\s]$/.test(trimmedText)) {
       logger.debug(
         { sessionId: this.sessionId, text: trimmedText },
-        'Skipping punctuation-only transcript'
-      );
-      this.resetBuffer();
-      return;
-    }
-
-    if (trimmedText.length < 2) {
-      logger.debug(
-        { sessionId: this.sessionId, text: trimmedText },
-        'Skipping too-short transcript'
+        'Skipping single punctuation character'
       );
       this.resetBuffer();
       return;
