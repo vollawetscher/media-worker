@@ -56,6 +56,7 @@ export class LiveKitRoomClient {
       {
         roomName: this.roomName,
         serverUrl: this.serverConfig.server_url,
+        apiKey: this.serverConfig.api_key,
       },
       'Connecting to LiveKit room'
     );
@@ -76,10 +77,24 @@ export class LiveKitRoomClient {
       logger.warn({ roomName: this.roomName }, 'Disconnected from LiveKit room');
     });
 
-    await this.room.connect(this.serverConfig.server_url, token, {
-      autoSubscribe: true,
-      dynacast: true,
-    });
+    try {
+      await this.room.connect(this.serverConfig.server_url, token, {
+        autoSubscribe: true,
+        dynacast: true,
+      });
+    } catch (error: any) {
+      logger.error(
+        {
+          error: error.message,
+          stack: error.stack,
+          serverUrl: this.serverConfig.server_url,
+          apiKey: this.serverConfig.api_key,
+          roomName: this.roomName,
+        },
+        'Failed to connect to LiveKit room'
+      );
+      throw error;
+    }
 
     logger.info(
       {
