@@ -38,10 +38,13 @@ export class RoomPoller {
       }
 
       try {
+        logger.debug({ workerId: this.workerId }, '[POLLING] Polling cycle started');
         const room = await this.pollForRoom();
         if (room && this.onRoomFound) {
           logger.info({ roomId: room.id, roomName: room.room_name }, '[POLLING] Found room, invoking callback');
           this.onRoomFound(room, 'polling');
+        } else {
+          logger.debug({ workerId: this.workerId }, '[POLLING] Polling cycle complete - no rooms available');
         }
       } catch (error) {
         logger.error({ error, workerId: this.workerId }, '[POLLING] Error polling for rooms');
@@ -63,6 +66,26 @@ export class RoomPoller {
     if (this.pollingTimer) {
       clearTimeout(this.pollingTimer);
       this.pollingTimer = null;
+    }
+  }
+
+  async checkNow(): Promise<void> {
+    if (!this.isPolling || !this.onRoomFound) {
+      return;
+    }
+
+    logger.info({ workerId: this.workerId }, '[POLLING] Immediate check triggered');
+
+    try {
+      const room = await this.pollForRoom();
+      if (room && this.onRoomFound) {
+        logger.info({ roomId: room.id, roomName: room.room_name }, '[POLLING] Immediate check found room');
+        this.onRoomFound(room, 'polling');
+      } else {
+        logger.debug({ workerId: this.workerId }, '[POLLING] Immediate check - no rooms available');
+      }
+    } catch (error) {
+      logger.error({ error, workerId: this.workerId }, '[POLLING] Error during immediate check');
     }
   }
 

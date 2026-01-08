@@ -55,11 +55,11 @@ export function loadConfig(): WorkerConfig {
   return {
     workerId: process.env.WORKER_ID || uuidv4(),
     mode,
-    pollingIntervalMs: parseInt(process.env.POLLING_INTERVAL_MS || '5000', 10),
+    pollingIntervalMs: parseInt(process.env.POLLING_INTERVAL_MS || '3000', 10),
     heartbeatIntervalMs: parseInt(process.env.HEARTBEAT_INTERVAL_MS || '15000', 10),
     realtimeTimeoutMs: parseInt(process.env.REALTIME_TIMEOUT_MS || '30000', 10),
     realtimeRetryIntervalMs: parseInt(process.env.REALTIME_RETRY_INTERVAL_MS || '120000', 10),
-    roomClaimCacheDurationMs: parseInt(process.env.ROOM_CLAIM_CACHE_DURATION_MS || '30000', 10),
+    roomClaimCacheDurationMs: parseInt(process.env.ROOM_CLAIM_CACHE_DURATION_MS || '5000', 10),
     enablePollingFallback: process.env.ENABLE_POLLING_FALLBACK !== 'false',
     enableDatabaseNotify: process.env.ENABLE_DATABASE_NOTIFY !== 'false',
     supabase: {

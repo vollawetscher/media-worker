@@ -9,6 +9,7 @@ import { LiveKitRoomClient, LiveKitServerConfig } from './livekit-room.js';
 import { SpeechmaticsConfig } from './speechmatics.js';
 import { CallEndDetector } from './call-end-detector.js';
 import { AIJobProcessor } from './ai-job-processor.js';
+import { PostCallJobScheduler } from './post-call-job-scheduler.js';
 import type { WorkerConfig } from '../config/index.js';
 
 const logger = createLogger({ component: 'WorkerManager' });
@@ -114,7 +115,7 @@ export class WorkerManager {
 
         await this.processRoom(room);
 
-        logger.info({ roomId: room.id, discoveryMethod }, 'Room processing completed');
+        logger.info({ roomId: room.id, discoveryMethod }, 'Room processing completed successfully');
       } catch (error) {
         logger.error({ error, roomId: room.id, discoveryMethod }, 'Error processing room');
 
@@ -124,9 +125,20 @@ export class WorkerManager {
           );
         }
       } finally {
+        const completedRoomId = room.id;
         this.currentRoomId = null;
         this.isProcessingRoom = false;
+
+        this.clearRoomFromCache(completedRoomId);
         this.cleanupOldClaimAttempts();
+
+        logger.info({ workerId: this.workerId }, 'Worker now available, checking for next room immediately');
+
+        if (this.roomPoller && !this.isShuttingDown) {
+          await this.roomPoller.checkNow().catch(err =>
+            logger.error({ err }, 'Error during immediate room check')
+          );
+        }
       }
     };
 
@@ -189,6 +201,13 @@ export class WorkerManager {
     this.recentClaimAttempts = this.recentClaimAttempts.filter(
       attempt => (now - attempt.timestamp.getTime()) < cacheDuration
     );
+  }
+
+  private clearRoomFromCache(roomId: string): void {
+    this.recentClaimAttempts = this.recentClaimAttempts.filter(
+      attempt => attempt.roomId !== roomId
+    );
+    logger.debug({ roomId }, 'Cleared room from claim cache');
   }
 
   private startStatsReporting(): void {
@@ -295,6 +314,26 @@ export class WorkerManager {
         })
         .eq('room_id', this.currentRoomId!)
         .eq('is_active', true);
+
+      logger.info({ roomId: this.currentRoomId }, 'Checking for existing post-call jobs');
+      const { data: existingJobs } = await supabase
+        .from('post_call_jobs')
+        .select('id')
+        .eq('room_id', this.currentRoomId!)
+        .limit(1);
+
+      if (!existingJobs || existingJobs.length === 0) {
+        logger.info({ roomId: this.currentRoomId }, 'Creating post-call jobs from worker');
+        try {
+          const jobScheduler = new PostCallJobScheduler(this.currentRoomId!);
+          await jobScheduler.scheduleJobs();
+          logger.info({ roomId: this.currentRoomId }, 'Post-call jobs created by worker');
+        } catch (jobError) {
+          logger.error({ error: jobError, roomId: this.currentRoomId }, 'Failed to create post-call jobs, webhook will handle it');
+        }
+      } else {
+        logger.info({ roomId: this.currentRoomId }, 'Post-call jobs already exist, skipping creation');
+      }
 
       if (this.currentRoomId) {
         await this.releaseRoom(this.currentRoomId);
