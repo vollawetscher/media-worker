@@ -51,6 +51,24 @@ export class RoomSubscriber {
     this.config = config;
   }
 
+  private shouldClaimRoom(room: { transcription_enabled: boolean }): boolean {
+    const mode = this.config.mode;
+
+    if (mode === 'both') {
+      return true;
+    }
+
+    if (mode === 'transcription') {
+      return room.transcription_enabled === true;
+    }
+
+    if (mode === 'ai-jobs') {
+      return room.transcription_enabled === false;
+    }
+
+    return false;
+  }
+
   getStats(): DiscoveryStats {
     return { ...this.stats };
   }
@@ -105,6 +123,11 @@ export class RoomSubscriber {
             return;
           }
 
+          if (!this.shouldClaimRoom(room)) {
+            logger.debug({ roomId: room.id, mode: this.config.mode, transcriptionEnabled: room.transcription_enabled }, '[REALTIME] Skipping room (mode mismatch)');
+            return;
+          }
+
           logger.info({ roomId: room.id, roomName: room.room_name, status: room.status }, '[REALTIME] New room detected, attempting to claim');
 
           const claimed = await this.claimRoom(room.id);
@@ -150,6 +173,11 @@ export class RoomSubscriber {
 
           if (oldRoom.status !== 'active' && room.status === 'active') {
             if (!room.media_worker_id || room.media_worker_id === this.workerId) {
+              if (!this.shouldClaimRoom(room)) {
+                logger.debug({ roomId: room.id, mode: this.config.mode, transcriptionEnabled: room.transcription_enabled }, '[REALTIME] Skipping room (mode mismatch)');
+                return;
+              }
+
               logger.info({ roomId: room.id, roomName: room.room_name }, '[REALTIME] Room became active, attempting to claim');
 
               const claimed = await this.claimRoom(room.id);
@@ -224,9 +252,15 @@ export class RoomSubscriber {
 
             const roomId = payload.room_id;
             const status = payload.status;
+            const transcriptionEnabled = payload.transcription_enabled;
 
             if (status !== 'pending' && status !== 'active') {
               logger.debug({ roomId, status }, '[NOTIFY] Skipping room with non-claimable status');
+              return;
+            }
+
+            if (!this.shouldClaimRoom({ transcription_enabled: transcriptionEnabled })) {
+              logger.debug({ roomId, mode: this.config.mode, transcriptionEnabled }, '[NOTIFY] Skipping room (mode mismatch)');
               return;
             }
 
@@ -379,6 +413,12 @@ export class RoomSubscriber {
     }
 
     const room = rooms[0];
+
+    if (!this.shouldClaimRoom(room)) {
+      logger.debug({ roomId: room.id, mode: this.config.mode, transcriptionEnabled: room.transcription_enabled }, '[STARTUP] Skipping room (mode mismatch)');
+      return;
+    }
+
     logger.info({ roomId: room.id, roomName: room.room_name }, '[STARTUP] Found existing unclaimed room');
 
     const claimed = await this.claimRoom(room.id);

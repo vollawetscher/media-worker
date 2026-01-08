@@ -1,5 +1,6 @@
 import { getSupabase } from '../lib/supabase.js';
 import { createLogger } from '../lib/logger.js';
+import type { WorkerConfig } from '../config/index.js';
 
 const logger = createLogger({ component: 'RoomPoller' });
 
@@ -17,14 +18,34 @@ type RoomCallback = (room: Room, discoveryMethod: 'polling') => void;
 
 export class RoomPoller {
   private workerId: string;
+  private config: WorkerConfig;
   private pollingIntervalMs: number;
   private pollingTimer: NodeJS.Timeout | null = null;
   private isPolling: boolean = false;
   private onRoomFound: RoomCallback | null = null;
 
-  constructor(workerId: string, pollingIntervalMs: number) {
+  constructor(workerId: string, config: WorkerConfig) {
     this.workerId = workerId;
-    this.pollingIntervalMs = pollingIntervalMs;
+    this.config = config;
+    this.pollingIntervalMs = config.pollingIntervalMs;
+  }
+
+  private shouldClaimRoom(room: { transcription_enabled: boolean }): boolean {
+    const mode = this.config.mode;
+
+    if (mode === 'both') {
+      return true;
+    }
+
+    if (mode === 'transcription') {
+      return room.transcription_enabled === true;
+    }
+
+    if (mode === 'ai-jobs') {
+      return room.transcription_enabled === false;
+    }
+
+    return false;
   }
 
   async start(onRoomFound: RoomCallback): Promise<void> {
@@ -111,6 +132,12 @@ export class RoomPoller {
     }
 
     const room = rooms[0];
+
+    if (!this.shouldClaimRoom(room)) {
+      logger.debug({ roomId: room.id, mode: this.config.mode, transcriptionEnabled: room.transcription_enabled }, '[POLLING] Skipping room (mode mismatch)');
+      return null;
+    }
+
     logger.info({ roomId: room.id, roomName: room.room_name }, '[POLLING] Found available room, attempting to claim');
 
     const claimed = await this.claimRoom(room.id);

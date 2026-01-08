@@ -147,7 +147,7 @@ export class WorkerManager {
 
     if (this.config.enablePollingFallback) {
       logger.info({ pollingInterval: this.config.pollingIntervalMs }, 'Starting polling fallback');
-      this.roomPoller = new RoomPoller(this.workerId, this.config.pollingIntervalMs);
+      this.roomPoller = new RoomPoller(this.workerId, this.config);
       await this.roomPoller.start(roomHandler);
     } else {
       logger.info('Polling fallback disabled by configuration');
